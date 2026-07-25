@@ -1,0 +1,50 @@
+{
+  "_comment": "데이터 소스는 여기만 본다. 학습 코드가 이 파일을 읽어 스트리밍한다.",
+  "_note": "다운로드하지 않는다. 25B 토큰 = 50GB인데 로컬 디스크 여유가 55GB뿐이라 스트리밍한다.",
+
+  "pretrain": {
+    "_comment": "전체의 85%. 웹 텍스트로 기본 능력을 만든다.",
+    "sources": [
+      {
+        "name": "ko",
+        "repo": "HuggingFaceFW/fineweb-2",
+        "config": "kor_Hang",
+        "field": "text",
+        "weight": 0.40,
+        "repeat": true,
+        "_note": "한국어 주력. 10B 토큰 목표라 2~3에폭 반복될 수 있다."
+      },
+      {
+        "name": "en",
+        "repo": "HuggingFaceFW/fineweb-edu",
+        "config": "sample-10BT",
+        "field": "text",
+        "weight": 0.45,
+        "repeat": true
+      },
+      {
+        "name": "code",
+        "repo": "bigcode/the-stack-smol",
+        "config": null,
+        "field": "content",
+        "weight": 0.15,
+        "repeat": true,
+        "_note": "JSON·구조화된 출력 능력에 기여한다. 도구 호출에 필요."
+      }
+    ]
+  },
+
+  "anneal": {
+    "_comment": "전체의 15%. 6주차에 채운다. 문체가 여기서 결정된다.",
+    "_status": "미정 — W6에 확정",
+    "candidates": [
+      {"name": "위키문헌 한국어", "url": "ko.wikisource.org", "note": "저작권 만료 문학. 신청 불필요"},
+      {"name": "공유마당", "url": "gongu.copyright.or.kr", "note": "저작권 만료 국내 저작물. 신청 불필요"},
+      {"name": "Project Gutenberg", "url": "gutenberg.org", "note": "영어 퍼블릭 도메인 도서"},
+      {"name": "모두의 말뭉치", "url": "corpus.korean.go.kr", "note": "신문·문어. 신청·승인 필요 (2주)"},
+      {"name": "한국어 위키백과", "repo": "wikimedia/wikipedia", "config": "20231101.ko"}
+    ]
+  },
+
+  "_license_rule": "배포 제품이므로 만료 저작물 또는 라이선스가 명시된 것만 쓴다. 나무위키 덤프는 CC BY-NC-SA(비영리)라 사용 불가."
+}

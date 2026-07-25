@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.pyc
+
+# 학습 산출물 — 확정 토크나이저만 커밋한다.
+# 전 티어가 같은 토크나이저를 공유해야 하므로 이건 버전 관리 대상이다.
+artifacts/*
+!artifacts/tokenizer/
+artifacts/tokenizer/*
+!artifacts/tokenizer/tokenizer.json
+
+checkpoints/
+*.gguf
+*.bin
+*.npy
+
+# 앱
+app/node_modules/
+app/src-tauri/target/
+app/dist/
+
+.DS_Store

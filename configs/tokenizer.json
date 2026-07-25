@@ -1,0 +1,31 @@
+{
+  "_comment": "W1에 확정하고 전 티어가 공유한다. 절대 중간에 바꾸지 않는다.",
+  "vocab_size": 49152,
+  "_vocab_size_rationale": "48*1024 — 128의 배수(TPU 행렬 효율) & 65536 미만(uint16 저장 가능)",
+  "model": "bpe",
+  "byte_level": true,
+  "normalizer": "NFC",
+  "_normalizer_rationale": "한글 조합형/분해형 통일. macOS는 NFD를 쓰므로 필수.",
+  "split_digits": true,
+  "special_tokens": [
+    "<|endoftext|>",
+    "<|pad|>",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|tool_call|>",
+    "<|tool_result|>",
+    "<|doc|>"
+  ],
+  "_reserved": "SFT 단계에서 쓸 토큰을 미리 잡아둔다. 나중에 추가하면 임베딩을 다시 학습해야 한다.",
+  "training_mix": {
+    "_comment": "토크나이저 학습용 샘플 비중. 한국어를 의도적으로 높여 한국어 압축률을 확보한다.",
+    "korean": 0.5,
+    "english": 0.35,
+    "code": 0.15
+  },
+  "target_compression": {
+    "_comment": "한국어 글자/토큰. 2026-07-25 실측 기준선 — SmolLM2(vocab 49152, 우리와 동일): 0.47, Qwen3(vocab 151669): 1.39, GPT-2: 0.46",
+    "korean_chars_per_token_min": 2.0,
+    "korean_chars_per_token_target": 2.5
+  }
+}

@@ -1,0 +1,15 @@
+# 학습 트랙 — Kaggle TPU v3-8 (JAX/Flax)
+# Kaggle 이미지에는 jax[tpu]가 이미 있으므로 노트북에서는 아래만 추가 설치한다.
+
+tokenizers>=0.22
+datasets>=3.0
+huggingface_hub>=0.27
+
+# TPU 학습 (Kaggle 외 환경에서 재현할 때만)
+# jax[tpu]>=0.4.35
+# flax>=0.10
+# optax>=0.2.4
+# orbax-checkpoint>=0.11
+
+# 평가/비교용 (선택)
+# transformers>=4.48
