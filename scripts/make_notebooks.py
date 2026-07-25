@@ -45,9 +45,9 @@ def notebook(cells: list[dict]) -> dict:
 # ---------------------------------------------------------------------------
 SETUP = '''
 # ── 코드 가져오기 ────────────────────────────────────────────────
-# 두 가지 방법 중 하나. GITHUB_URL을 채우면 그쪽을 쓴다.
-GITHUB_URL = ""          # 예: "https://github.com/사용자명/Cati.git"
-DATASET_DIR = "/kaggle/input/cati-code"   # 코드를 Dataset으로 올린 경우
+# 코드를 고쳤으면 GitHub에 push 한 뒤 이 노트북을 다시 실행하면 된다.
+GITHUB_URL = "https://github.com/foeplob11-code/Cati.git"
+DATASET_DIR = "/kaggle/input/cati-code"   # GitHub 대신 Dataset으로 올린 경우
 
 import os, subprocess, sys, shutil
 from pathlib import Path
