@@ -31,13 +31,17 @@ ROOT = Path(__file__).resolve().parent.parent
 CFG_PATH = ROOT / "configs" / "tokenizer.json"
 OUT_DIR = ROOT / "artifacts" / "tokenizer"
 
-# FineWeb2는 <언어>_<문자> 형식의 config 이름을 쓴다.
-# ⚠️ Kaggle 첫 실행 시 이름이 유효한지 확인할 것 — 데이터셋 config는 바뀔 수 있다.
-SOURCES = {
-    "korean":  ("HuggingFaceFW/fineweb-2", "kor_Hang", "text"),
-    "english": ("HuggingFaceFW/fineweb-edu", "sample-10BT", "text"),
-    "code":    ("bigcode/the-stack-smol", None, "content"),
-}
+# configs/data.json 의 pretrain 소스를 그대로 쓴다. 한 곳에서만 관리한다.
+def _sources_from_config() -> dict:
+    data = json.loads((ROOT / "configs" / "data.json").read_text())
+    out = {}
+    for s in data["pretrain"]["sources"]:
+        key = {"ko": "korean", "en": "english"}.get(s["name"], s["name"])
+        out[key] = (s["repo"], s.get("config"), s.get("field", "text"))
+    return out
+
+
+SOURCES = _sources_from_config()
 
 
 def build_tokenizer(cfg):
@@ -71,34 +75,42 @@ def make_trainer(cfg, vocab_size=None):
 
 
 def weighted_corpus(mix, total_docs, seed=0):
-    """가중치에 따라 여러 스트리밍 데이터셋에서 문서를 섞어 내보낸다."""
-    from datasets import load_dataset
+    """가중치에 따라 여러 스트리밍 데이터셋에서 문서를 섞어 내보낸다.
+
+    접근할 수 없는 소스는 건너뛰고 가중치를 재정규화한다 — 공개 데이터셋이
+    예고 없이 gated로 바뀌는 일이 있어서 하나 때문에 전체가 죽으면 안 된다.
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+    from cati.stream import HFSource, usable_sources
 
     rng = random.Random(seed)
-    streams, weights = [], []
+    candidates, weights = [], []
     for kind, weight in mix.items():
         if kind.startswith("_") or weight <= 0:
             continue
         repo, config, field = SOURCES[kind]
         print(f"  {kind:8s} w={weight:.2f}  {repo}" + (f" [{config}]" if config else ""))
-        ds = load_dataset(repo, config, split="train", streaming=True)
-        streams.append((iter(ds), field, kind))
+        candidates.append(HFSource(kind, repo, config, field, min_chars=200))
         weights.append(weight)
 
-    counts = {k: 0 for _, _, k in streams}
+    sources, weights, _ = usable_sources(candidates, weights)
+    streams = [(s.iterator(), s.name) for s in sources]
+
+    counts = {name for _, name in streams}
+    counts = {k: 0 for k in counts}
     emitted = 0
     while emitted < total_docs:
-        (it, field, kind), = rng.choices(streams, weights=weights, k=1)
+        (it, kind), = rng.choices(streams, weights=weights, k=1)
         try:
-            text = next(it).get(field) or ""
+            text = next(it)
         except StopIteration:
-            continue
-        if len(text) < 200:          # 너무 짧은 문서는 병합 통계를 왜곡한다
             continue
         counts[kind] += 1
         emitted += 1
         if emitted % 100_000 == 0:
-            print(f"  ... {emitted:,} docs  {counts}")
+            print(f"  ... {emitted:,} docs  {counts}", flush=True)
         yield text
 
 

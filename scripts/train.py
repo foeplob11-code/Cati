@@ -41,10 +41,18 @@ TPU_V3_8_PEAK = 420e12
 # 준비
 # ---------------------------------------------------------------------------
 def build_stream(data_cfg: dict, phase: str, seed: int) -> ResumableStream:
+    from cati.stream import usable_sources
+
     specs = data_cfg[phase]["sources"]
-    sources = [HFSource(s["name"], s["repo"], s.get("config"), s.get("field", "text"),
-                        repeat=s.get("repeat", True)) for s in specs]
-    return ResumableStream(sources, [s["weight"] for s in specs], seed=seed)
+    cands = [HFSource(s["name"], s["repo"], s.get("config"), s.get("field", "text"),
+                      repeat=s.get("repeat", True)) for s in specs]
+    print("데이터 소스 확인")
+    sources, weights, dropped = usable_sources(cands, [s["weight"] for s in specs])
+    for s, w in zip(sources, weights):
+        print(f"  {s.name:8s} w={w:.2f}  {s.repo}" + (f" [{s.config}]" if s.config else ""))
+    if dropped:
+        print(f"  ⚠️ {len(dropped)}개 소스를 못 썼다. 데이터 믹스가 계획과 다르다.")
+    return ResumableStream(sources, weights, seed=seed)
 
 
 def load_tokenizer(path: Path):

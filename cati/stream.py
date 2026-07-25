@@ -25,8 +25,41 @@ class StreamSource(Protocol):
 
     def iterator(self) -> Iterator[str]: ...
     def reset(self) -> None: ...
+    def probe(self) -> tuple[bool, str]: ...
     def state_dict(self) -> dict: ...
     def load_state_dict(self, state: dict) -> None: ...
+
+
+def usable_sources(sources: list, weights: list[float], verbose: bool = True):
+    """접근 가능한 소스만 남기고 가중치를 재정규화한다.
+
+    공개 데이터셋은 예고 없이 gated로 바뀌거나 이름이 바뀐다.
+    (bigcode/the-stack-smol 이 2026-07에 그렇게 됐다)
+    그때 5주짜리 런이 죽으면 안 되므로, 못 쓰는 소스는 건너뛰고 남은 것으로 계속한다.
+    """
+    keep_s, keep_w, dropped = [], [], []
+    for s, w in zip(sources, weights):
+        ok, why = s.probe()
+        if ok:
+            keep_s.append(s)
+            keep_w.append(w)
+        else:
+            dropped.append((s.name, why))
+
+    if not keep_s:
+        raise RuntimeError("쓸 수 있는 데이터 소스가 하나도 없다:\n  " +
+                           "\n  ".join(f"{n}: {w}" for n, w in dropped))
+
+    total = sum(keep_w)
+    keep_w = [w / total for w in keep_w]
+
+    if verbose:
+        for name, why in dropped:
+            print(f"  [건너뜀] {name}: {why}")
+        if dropped:
+            print(f"  가중치 재정규화: " +
+                  ", ".join(f"{s.name} {w:.2f}" for s, w in zip(keep_s, keep_w)))
+    return keep_s, keep_w, dropped
 
 
 class ListSource:
@@ -46,6 +79,9 @@ class ListSource:
 
     def reset(self) -> None:
         self._pos = 0
+
+    def probe(self) -> tuple[bool, str]:
+        return bool(self._items), "" if self._items else "빈 소스"
 
     def state_dict(self) -> dict:
         return {"pos": self._pos}
@@ -104,6 +140,14 @@ class HFSource:
     def reset(self) -> None:
         self._skip = 0
         self._ds = None
+
+    def probe(self) -> tuple[bool, str]:
+        """실제로 열어본다. gated·삭제·개명을 여기서 잡는다."""
+        try:
+            self._dataset()
+            return True, ""
+        except Exception as e:
+            return False, f"{type(e).__name__}: {str(e).splitlines()[0][:110]}"
 
     def state_dict(self) -> dict:
         ds = self._dataset()

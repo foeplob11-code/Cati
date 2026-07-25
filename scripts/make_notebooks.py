@@ -57,9 +57,12 @@ subprocess.run([sys.executable, "-m", "pip", "install", "-q",
 # ── 환경 ────────────────────────────────────────────────────────
 import jax
 devs = jax.devices()
-print(f"디바이스   {{len(devs)}}개 · {{devs[0].device_kind}}")
-if devs[0].platform != "tpu":
-    print("           ⚠️ TPU가 아니다 → Settings에서 TPU VM v3-8 선택 후 세션 재시작")
+IS_TPU = devs[0].platform == "tpu"
+print(f"디바이스   {{len(devs)}}개 · {{devs[0].device_kind}}"
+      f"{{'' if IS_TPU else '  ← TPU 아님'}}")
+if not IS_TPU:
+    print("           토크나이저는 이대로 만들 수 있다 (오히려 TPU 쿼터를 아낀다).")
+    print("           학습은 건너뛴다 — 끝나면 Settings에서 TPU VM v3-8 로 바꾸고 다시 실행.")
 try:
     socket.create_connection(("huggingface.co", 443), timeout=10).close()
     print("인터넷     OK")
@@ -137,11 +140,20 @@ TRAIN = '''
 #  MFU   35% 근처면 계획대로. 25% 미만이면 알려주세요
 import subprocess, sys
 
-cmd = [sys.executable, "scripts/train.py", "--tier", TIER,
-       "--session-hours", str(SESSION_HOURS)]
-if not STORE:
-    cmd.append("--no-store")
-subprocess.run(cmd, check=False)
+if not IS_TPU:
+    # T4/P100은 bf16 하드웨어가 없고, 350M을 돌리면 596시간이 걸린다.
+    # 세션 하나를 헛되게 태우지 않도록 여기서 멈춘다.
+    print("가속기가 TPU가 아니라 학습을 건너뜁니다.\\n")
+    print("토크나이저는 위에서 만들어졌습니다. 이제 이것만 하면 됩니다:")
+    print("  1. 우측 Settings → Accelerator → 'TPU VM v3-8'")
+    print("  2. Save Version → Save & Run All")
+    print("\\n(TPU 쿼터를 아꼈습니다 — 토크나이저를 GPU/CPU에서 만들었으니까요)")
+else:
+    cmd = [sys.executable, "scripts/train.py", "--tier", TIER,
+           "--session-hours", str(SESSION_HOURS)]
+    if not STORE:
+        cmd.append("--no-store")
+    subprocess.run(cmd, check=False)
 '''
 
 
@@ -151,7 +163,13 @@ import json, shutil
 from pathlib import Path
 
 steps = sorted(Path("artifacts/ckpt").glob("*/step_*"))
-if not steps:
+if not IS_TPU:
+    print("┌─────────────────────────────────────────────┐")
+    print("│  토크나이저 완료                             │")
+    print("│  → Settings에서 TPU VM v3-8 로 바꾸고         │")
+    print("│    Save & Run All 을 다시 누르세요            │")
+    print("└─────────────────────────────────────────────┘")
+elif not steps:
     print("체크포인트가 없다 — 위 학습 셀 출력을 확인할 것")
 else:
     latest = steps[-1]

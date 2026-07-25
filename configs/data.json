@@ -24,12 +24,13 @@
       },
       {
         "name": "code",
-        "repo": "bigcode/the-stack-smol",
+        "repo": "codeparrot/codeparrot-clean",
         "config": null,
         "field": "content",
         "weight": 0.15,
         "repeat": true,
-        "_note": "JSON·구조화된 출력 능력에 기여한다. 도구 호출에 필요."
+        "_note": "JSON·구조화된 출력 능력에 기여한다. 도구 호출에 필요.",
+        "_history": "bigcode/the-stack-smol 은 2026-07 시점에 gated로 바뀌어 인증 없이 못 받는다. 접근 불가 소스는 자동으로 건너뛰고 가중치가 재정규화된다."
       }
     ]
   },
