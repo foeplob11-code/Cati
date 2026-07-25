@@ -119,10 +119,85 @@ class KaggleDatasetStore:
         return dest
 
 
+class HFHubStore:
+    """Hugging Face Hub을 세션 간 인계 매체로 쓴다.
+
+    Google Drive 대안. 이쪽이 나은 점:
+      · 파일 크기 제한이 없다 (Drive 무료는 15GB 전체 한도)
+      · 최종 모델은 어차피 HF에 올려야 GGUF로 변환하므로 가는 길에 있다
+      · 토큰이 문자열이라 파일 다운로드가 필요 없다
+
+    토큰: hf.co/settings/tokens 에서 write 권한으로 만든다.
+    Colab이면 좌측 🔑(Secrets)에 HF_TOKEN 으로 넣으면 자동으로 잡힌다.
+
+    체크포인트는 항상 같은 경로(checkpoint/)에 덮어쓴다. 스텝별로 쌓으면
+    저장소가 계속 커진다.
+    """
+
+    PATH_IN_REPO = "checkpoint"
+
+    def __init__(self, repo_id: str, token: str | None = None, private: bool = True):
+        self.repo_id = repo_id
+        self.token = token or os.environ.get("HF_TOKEN")
+        self.private = private
+        self._ensured = False
+
+    def _api(self):
+        from huggingface_hub import HfApi
+        return HfApi(token=self.token)
+
+    def _ensure_repo(self) -> None:
+        if self._ensured:
+            return
+        self._api().create_repo(self.repo_id, private=self.private,
+                                exist_ok=True, repo_type="model")
+        self._ensured = True
+
+    def publish(self, local_dir: Path, message: str) -> bool:
+        try:
+            self._ensure_repo()
+            self._api().upload_folder(
+                folder_path=str(local_dir),
+                path_in_repo=self.PATH_IN_REPO,
+                repo_id=self.repo_id,
+                commit_message=message,
+                # 이전 체크포인트의 잔여 파일을 남기지 않는다
+                delete_patterns="*",
+            )
+            return True
+        except Exception as e:
+            print(f"  [경고] HF 업로드 실패: {type(e).__name__}: {str(e).splitlines()[0][:200]}")
+            print("  로컬 체크포인트는 남아 있다.")
+            return False
+
+    def fetch_latest(self, dest: Path) -> Path | None:
+        from huggingface_hub import snapshot_download
+        try:
+            got = snapshot_download(
+                repo_id=self.repo_id, repo_type="model", token=self.token,
+                local_dir=str(dest), allow_patterns=f"{self.PATH_IN_REPO}/**")
+        except Exception as e:
+            print(f"  이전 체크포인트 없음 (새 런으로 시작): "
+                  f"{type(e).__name__}: {str(e).splitlines()[0][:150]}")
+            return None
+        d = Path(got) / self.PATH_IN_REPO
+        return d if (d / "meta.json").exists() else None
+
+
 def default_store(dry_run: bool = False) -> CheckpointStore:
-    """실행 환경에 맞는 스토어를 고른다."""
+    """환경변수를 보고 스토어를 고른다.
+
+    CATI_HF_REPO      → Hugging Face Hub  (예: "사용자명/cati-ckpt-200m")
+    KAGGLE_USERNAME   → Kaggle Dataset
+    CATI_CKPT_STORE   → 로컬 디렉터리 (Google Drive 마운트 경로 등)
+    """
+    hf_repo = os.environ.get("CATI_HF_REPO")
+    if hf_repo:
+        return HFHubStore(hf_repo)
+
     owner = os.environ.get("KAGGLE_USERNAME")
-    slug = os.environ.get("CATI_CKPT_DATASET", "cati-checkpoints")
     if owner:
+        slug = os.environ.get("CATI_CKPT_DATASET", "cati-checkpoints")
         return KaggleDatasetStore(owner, slug, dry_run=dry_run)
+
     return LocalStore(Path(os.environ.get("CATI_CKPT_STORE", "artifacts/store")))

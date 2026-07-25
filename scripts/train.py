@@ -93,6 +93,9 @@ def main():
     ap.add_argument("--ckpt", default=None, help="기본: artifacts/ckpt/<티어이름>")
     ap.add_argument("--phase", default="pretrain", choices=["pretrain", "anneal"])
     ap.add_argument("--session-hours", type=float, default=9.0)
+    ap.add_argument("--publish-every", type=int, default=None,
+                    help="N스텝마다 원격 저장소에 발행 (기본: save_every의 4배). "
+                         "Colab은 예고 없이 끊겨 세션 끝 발행을 못 하므로 필요하다.")
     ap.add_argument("--quota-hours", type=float, default=160.0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--smoke", action="store_true", help="CPU에서 작은 모델로 몇 스텝만")
@@ -205,6 +208,8 @@ def main():
         peak_flops=TPU_V3_8_PEAK, quota_hours_total=args.quota_hours,
         save_every=raw.get("save_every_steps", 200),
         log_every=raw.get("log_every_steps", 10),
+        publish_every=(args.publish_every if args.publish_every is not None
+                       else 4 * raw.get("save_every_steps", 200)),
     )
 
     state, step, tokens = run.start(init_fn, packer)
