@@ -85,7 +85,7 @@ def make_optimizer(cfg: CatiConfig, raw: dict, total_steps: int):
 # ---------------------------------------------------------------------------
 # 학습
 # ---------------------------------------------------------------------------
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--tier", required=True)
     ap.add_argument("--data", default="configs/data.json")
@@ -101,7 +101,7 @@ def main():
     ap.add_argument("--smoke", action="store_true", help="CPU에서 작은 모델로 몇 스텝만")
     ap.add_argument("--max-steps", type=int, default=None)
     ap.add_argument("--no-store", action="store_true", help="원격 발행 생략")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     raw = json.loads((ROOT / args.tier).read_text())
     cfg = CatiConfig.load(ROOT / args.tier)

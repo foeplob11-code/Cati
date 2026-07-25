@@ -224,7 +224,7 @@ def cmd_measure(args):
     print(f"\n목표 {target} 대비: {'통과' if ours >= target else '미달 — 한국어 비중을 올릴 것'}")
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -243,7 +243,7 @@ def main():
     p.add_argument("--smoke", action="store_true")
     p.set_defaults(fn=cmd_measure)
 
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
     args.fn(args)
 
 

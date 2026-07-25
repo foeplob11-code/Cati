@@ -116,7 +116,7 @@ class NumpyBackend:
         import numpy as np
         np.savez(path / "arrays.npz", **{k: np.asarray(v) for k, v in flat.items()})
 
-    def load(self, path: Path) -> dict[str, Any]:
+    def load(self, path: Path, target_flat: dict | None = None) -> dict[str, Any]:
         import numpy as np
         with np.load(path / "arrays.npz", allow_pickle=False) as z:
             return {k: z[k] for k in z.files}
@@ -136,9 +136,14 @@ class OrbaxBackend:
         ckptr.save(path.absolute() / "arrays", flat)
         ckptr.wait_until_finished()
 
-    def load(self, path: Path) -> dict[str, Any]:
+    def load(self, path: Path, target_flat: dict | None = None) -> dict[str, Any]:
         ckptr = self._ocp.StandardCheckpointer()
-        return ckptr.restore(path.absolute() / "arrays")
+        d = path.absolute() / "arrays"
+        if target_flat is None:
+            # target 없이 복원하면 Orbax가 샤딩/토폴로지를 모른다고 경고한다.
+            # 배열이 device 0 에 몰릴 수 있어 다중 디바이스에서 비효율적이다.
+            return ckptr.restore(d)
+        return ckptr.restore(d, target_flat)
 
 
 def auto_backend():
@@ -220,7 +225,9 @@ class CheckpointManager:
             raise RuntimeError(
                 f"체크포인트 백엔드 불일치: 저장 {meta.get('backend')} / 현재 {self.backend.name}. "
                 "TPU와 로컬 체크포인트를 섞지 말 것.")
-        return flat_to_tree(self.backend.load(d), target), meta
+        # target을 평평하게 넘겨 백엔드가 형상·dtype·샤딩을 알고 복원하게 한다.
+        target_flat = tree_to_flat(target) if target is not None else None
+        return flat_to_tree(self.backend.load(d, target_flat), target), meta
 
     # ---- 발행 ----------------------------------------------------------
     def publish(self, message: str | None = None) -> bool:

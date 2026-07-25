@@ -60,22 +60,23 @@ NB_START = time.monotonic()
 os.environ["PYTHONUNBUFFERED"] = "1"
 
 
-def stream(cmd, check=False):
-    """자식 프로세스 출력을 노트북 셀에 실시간으로 흘린다.
+def run_script(name, args):
+    """스크립트를 **이 프로세스 안에서** 실행한다. 자식 프로세스로 띄우지 않는다.
 
-    subprocess.run() 을 그냥 쓰면 Colab에서는 출력이 셀에 안 나온다.
-    ipykernel이 sys.stdout 을 파이썬 레벨에서 갈아치우기 때문에, 파일
-    디스크립터를 물려받은 자식이 쓰는 내용은 셀을 거치지 않는다.
-    그래서 파이프로 받아 파이썬 print 로 다시 내보낸다.
+    이유 두 가지.
+      1. TPU는 한 프로세스만 점유할 수 있다. 준비 셀이 jax.devices() 로
+         TPU를 확인하는 순간 노트북이 TPU를 잡으므로, 자식 프로세스는
+         "The TPU is already in use by process with pid ..." 로 죽는다.
+      2. ipykernel이 sys.stdout 을 파이썬 레벨에서 갈아치우기 때문에,
+         자식 프로세스의 출력은 노트북 셀에 안 보인다.
+
+    같은 프로세스에서 돌리면 둘 다 해결된다.
     """
-    p = subprocess.Popen([sys.executable, "-u", *cmd], stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True, bufsize=1)
-    for line in p.stdout:
-        print(line, end="", flush=True)
-    rc = p.wait()
-    if check and rc != 0:
-        raise SystemExit(f"실패 (종료 코드 {{rc}}): {{' '.join(cmd)}}")
-    return rc
+    import importlib
+    sys.path.insert(0, str(Path.cwd() / "scripts"))
+    mod = importlib.import_module(name)
+    importlib.reload(mod)        # git pull 로 갱신됐을 수 있다
+    return mod.main(args)
 
 # 설정 셀을 건너뛰고 이 셀부터 실행해도 죽지 않게 기본값을 채운다.
 # (Colab에서는 '런타임 → 모두 실행'을 쓰는 게 안전하다)
@@ -159,8 +160,7 @@ elif TOK.exists():
         shutil.copy(TOK, SAVED)
 else:
     print("토크나이저 없음 → 새로 학습 (20~40분, 처음 한 번만)\\n")
-    stream(["scripts/train_tokenizer.py", "train", "--docs", str(TOKENIZER_DOCS)],
-           check=True)
+    run_script("train_tokenizer", ["train", "--docs", str(TOKENIZER_DOCS)])
     assert TOK.exists(), "학습이 끝났는데 파일이 없다 — 위 출력 확인"
     if SAVED is not None:
         shutil.copy(TOK, SAVED)
@@ -202,10 +202,10 @@ else:
     else:
         # 체크포인트는 /content 에 쓰고(빠름) 저장소로 발행한다(살아남음).
         # 저장소는 준비 셀이 환경변수로 정해뒀다.
-        stream(["scripts/train.py", "--tier", TIER,
-                "--session-hours", f"{left:.3f}",
-                "--ckpt", "/content/ckpt",
-                "--quota-hours", "160"])
+        run_script("train", ["--tier", TIER,
+                             "--session-hours", f"{left:.3f}",
+                             "--ckpt", "/content/ckpt",
+                             "--quota-hours", "160"])
 '''
 
 COLAB_RESULT = '''
@@ -297,16 +297,13 @@ import os, shutil, socket, subprocess, sys
 from pathlib import Path
 
 
-def stream(cmd, check=False):
-    """자식 프로세스 출력을 셀에 실시간으로 흘린다 (subprocess.run 은 안 보인다)."""
-    p = subprocess.Popen([sys.executable, "-u", *cmd], stdout=subprocess.PIPE,
-                         stderr=subprocess.STDOUT, text=True, bufsize=1)
-    for line in p.stdout:
-        print(line, end="", flush=True)
-    rc = p.wait()
-    if check and rc != 0:
-        raise SystemExit(f"실패 (종료 코드 {{rc}})")
-    return rc
+def run_script(name, args):
+    """스크립트를 이 프로세스 안에서 실행한다 (자식 프로세스 출력은 셀에 안 보인다)."""
+    import importlib
+    sys.path.insert(0, str(Path.cwd() / "scripts"))
+    mod = importlib.import_module(name)
+    importlib.reload(mod)
+    return mod.main(args)
 
 CATI = Path("/kaggle/working/Cati")
 if CATI.exists():
@@ -327,8 +324,7 @@ except OSError:
 TOK = Path("artifacts/tokenizer/tokenizer.json")
 TOK.parent.mkdir(parents=True, exist_ok=True)
 if not TOK.exists():
-    stream(["scripts/train_tokenizer.py", "train", "--docs", str(TOKENIZER_DOCS)],
-           check=True)
+    run_script("train_tokenizer", ["train", "--docs", str(TOKENIZER_DOCS)])
 
 from tokenizers import Tokenizer
 _t = Tokenizer.from_file(str(TOK))
