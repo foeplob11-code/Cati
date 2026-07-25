@@ -57,6 +57,7 @@ from pathlib import Path
 # 세션 시작 시각. 토크나이저 학습에 40분을 쓰면 학습에 남는 시간도 그만큼 줄어든다.
 # 이걸 학습 셀에 넘겨줘야 세션 가드가 실제 남은 시간을 안다.
 NB_START = time.monotonic()
+os.environ["PYTHONUNBUFFERED"] = "1"   # 자식 프로세스 로그가 즉시 보이게
 
 # 설정 셀을 건너뛰고 이 셀부터 실행해도 죽지 않게 기본값을 채운다.
 # (Colab에서는 '런타임 → 모두 실행'을 쓰는 게 안전하다)
@@ -140,7 +141,7 @@ elif TOK.exists():
         shutil.copy(TOK, SAVED)
 else:
     print("토크나이저 없음 → 새로 학습 (20~40분, 처음 한 번만)\\n")
-    subprocess.run([sys.executable, "scripts/train_tokenizer.py",
+    subprocess.run([sys.executable, "-u", "scripts/train_tokenizer.py",
                     "train", "--docs", str(TOKENIZER_DOCS)], check=True)
     assert TOK.exists(), "학습이 끝났는데 파일이 없다 — 위 출력 확인"
     if SAVED is not None:
@@ -183,7 +184,7 @@ else:
     else:
         # 체크포인트는 /content 에 쓰고(빠름) 저장소로 발행한다(살아남음).
         # 저장소는 준비 셀이 환경변수로 정해뒀다.
-        subprocess.run([sys.executable, "scripts/train.py", "--tier", TIER,
+        subprocess.run([sys.executable, "-u", "scripts/train.py", "--tier", TIER,
                         "--session-hours", f"{left:.3f}",
                         "--ckpt", "/content/ckpt",
                         "--quota-hours", "160"], check=False)
@@ -296,7 +297,7 @@ except OSError:
 TOK = Path("artifacts/tokenizer/tokenizer.json")
 TOK.parent.mkdir(parents=True, exist_ok=True)
 if not TOK.exists():
-    subprocess.run([sys.executable, "scripts/train_tokenizer.py",
+    subprocess.run([sys.executable, "-u", "scripts/train_tokenizer.py",
                     "train", "--docs", str(TOKENIZER_DOCS)], check=True)
 
 from tokenizers import Tokenizer

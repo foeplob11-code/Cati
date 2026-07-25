@@ -24,6 +24,7 @@ import argparse
 import json
 import random
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -95,12 +96,17 @@ def weighted_corpus(mix, total_docs, seed=0):
         candidates.append(HFSource(kind, repo, config, field, min_chars=200))
         weights.append(weight)
 
+    print("  소스 접근 확인 중... (데이터셋별로 30초쯤 걸린다)", flush=True)
     sources, weights, _ = usable_sources(candidates, weights)
     streams = [(s.iterator(), s.name) for s in sources]
+    print(f"  스트리밍 시작 — 목표 {total_docs:,} 문서\n", flush=True)
 
-    counts = {name for _, name in streams}
-    counts = {k: 0 for k in counts}
+    counts = {name: 0 for _, name in streams}
     emitted = 0
+    t0 = last = time.monotonic()
+    # 진행 표시는 촘촘해야 한다. 10만마다 찍으면 첫 줄까지 10분 넘게 걸려
+    # 멈춘 것과 구분이 안 된다.
+    every = max(1000, total_docs // 40)
     while emitted < total_docs:
         (it, kind), = rng.choices(streams, weights=weights, k=1)
         try:
@@ -109,9 +115,17 @@ def weighted_corpus(mix, total_docs, seed=0):
             continue
         counts[kind] += 1
         emitted += 1
-        if emitted % 100_000 == 0:
-            print(f"  ... {emitted:,} docs  {counts}", flush=True)
+        if emitted % every == 0:
+            now = time.monotonic()
+            rate = every / max(1e-9, now - last)
+            eta = (total_docs - emitted) / max(1e-9, rate) / 60
+            print(f"  {emitted:>7,} / {total_docs:,} ({emitted/total_docs:4.0%})  "
+                  f"{rate:>5.0f} docs/s  남은 시간 {eta:4.1f}분  {counts}", flush=True)
+            last = now
         yield text
+    print(f"\n  스트리밍 완료 — {emitted:,} 문서 / {(time.monotonic()-t0)/60:.1f}분",
+          flush=True)
+    print("  이제 BPE 병합을 계산한다 (몇 분 걸리고 진행 표시가 없다)", flush=True)
 
 
 def local_corpus():
