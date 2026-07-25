@@ -112,29 +112,19 @@ python3 scripts/budget.py
 
 ## Kaggle에서 돌리기
 
-노트북 하나로 끝난다. 토크나이저가 없으면 알아서 만들고, 있으면 건너뛴다.
+→ **[시작하기.md](시작하기.md)** (4단계)
 
-**처음 한 번만**
+노트북 하나, 셀 4개. 고치는 것은 맨 위 `STEP` 숫자 하나뿐이다.
+토크나이저·체크포인트는 없으면 만들고 있으면 찾는다.
 
-1. [notebooks/cati_train.ipynb](notebooks/cati_train.ipynb) 다운로드
-2. Kaggle → New Notebook → File → **Import Notebook** → 업로드
-3. Settings → Accelerator **TPU VM v3-8** · Internet **On**
-4. **Save Version → Save & Run All** → 창 닫기
+| STEP | 모델 | TPU 시간 | 세션 수 |
+|---|---|---|---|
+| 1 | 50M | 1.1h | 1 |
+| 2 | 100M | 4.4h | 1 |
+| 3 | 350M | 97.4h | 11 (5주) |
 
-**그 다음부터** — `Save & Run All` 만 다시 누른다. 체크포인트에서 자동으로 이어진다.
-
-| TIER | TPU 시간 | 세션 수 |
-|---|---|---|
-| `tier0_50m` | 1.1h | 1 |
-| `tier1_100m` | 4.4h | 1 |
-| `tier2_350m` | 97.4h | 11 (5주) |
-
-`TIER` 를 위 순서대로 바꿔가며 돌린다. 50M·100M 은 97시간을 태우기 전에
-파이프라인을 검증하고 스케일링 법칙을 확보하는 단계다.
-
-**350M 전에 한 번**: Add-ons → Secrets 에 `KAGGLE_USERNAME` / `KAGGLE_KEY` 를 넣는다.
-세션 11번을 이어가려면 체크포인트가 세션 밖에서 살아남아야 한다.
-50M·100M 은 한 세션에 끝나므로 없어도 된다.
+체크포인트 데이터셋은 티어별로 분리한다 (`cati-ckpt-50m` 등).
+하나로 합치면 티어를 바꿀 때 남의 체크포인트를 집어와 구조 불일치로 죽는다.
 
 ## 현재 상태
 
