@@ -176,7 +176,7 @@ else:
     # 준비 단계(토크나이저 등)에 쓴 시간을 빼야 세션 가드가 실제 남은 시간을 안다.
     used = (time.monotonic() - NB_START) / 3600
     left = SESSION_HOURS - used
-    print(f"준비에 {used*60:.0f}분 사용 · 학습에 {left:.2f}시간 배정\n")
+    print(f"준비에 {used*60:.0f}분 사용 · 학습에 {left:.2f}시간 배정\\n")
     if left < 0.2:
         print("남은 시간이 너무 적습니다. 이 노트북을 다시 실행하세요 —")
         print("토크나이저는 이미 만들어졌으니 다음엔 바로 학습으로 갑니다.")
@@ -336,6 +336,27 @@ def build_tokenizer_nb() -> dict:
     ])
 
 
+def verify(nb: dict, name: str) -> list[str]:
+    """생성한 노트북의 코드 셀이 파이썬으로 파싱되는지 확인한다.
+
+    이걸 안 해서 깨진 노트북을 커밋한 적이 있다. 원인은 f-string 안의 `\\n` —
+    생성기 소스에서 `\\n` 이라고 쓰면 생성물에는 실제 줄바꿈이 들어가
+    문자열 리터럴이 끊긴다. 반드시 `\\\\n` 으로 써야 한다.
+    """
+    problems = []
+    for i, c in enumerate(nb["cells"]):
+        if c["cell_type"] != "code":
+            continue
+        src = "".join(c["source"])
+        if any(l.lstrip().startswith(("!", "%")) for l in c["source"]):
+            continue          # 셸/매직 명령은 파이썬 문법이 아니다
+        try:
+            compile(src, f"{name}:cell{i}", "exec")
+        except SyntaxError as e:
+            problems.append(f"{name} cell{i} line {e.lineno}: {e.msg}")
+    return problems
+
+
 def main():
     OUT.mkdir(exist_ok=True)
     for old in ("01_tokenizer.ipynb", "02_train.ipynb", "cati_train.ipynb"):
@@ -344,12 +365,23 @@ def main():
             p.unlink()
             print(f"삭제: notebooks/{old}")
 
+    built, problems = [], []
     for name, nb in [("cati_colab", build_colab()),
                      ("cati_tokenizer", build_tokenizer_nb())]:
+        problems += verify(nb, name)
+        built.append((name, nb))
+
+    if problems:
+        print("생성 중단 — 코드 셀에 문법 오류가 있다:")
+        for p in problems:
+            print(f"  {p}")
+        raise SystemExit(1)
+
+    for name, nb in built:
         path = OUT / f"{name}.ipynb"
         path.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\n")
         n_code = sum(1 for c in nb["cells"] if c["cell_type"] == "code")
-        print(f"{path.relative_to(ROOT)}  (셀 {len(nb['cells'])}개 / 코드 {n_code}개)")
+        print(f"{path.relative_to(ROOT)}  (셀 {len(nb['cells'])}개 / 코드 {n_code}개 · 문법 OK)")
 
 
 if __name__ == "__main__":
