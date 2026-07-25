@@ -54,7 +54,15 @@ COLAB_PREPARE = f'''
 import os, shutil, subprocess, sys
 from pathlib import Path
 
+# 설정 셀을 건너뛰고 이 셀부터 실행해도 죽지 않게 기본값을 채운다.
+# (Colab에서는 '런타임 → 모두 실행'을 쓰는 게 안전하다)
+if "STEP" not in globals():
+    STEP, SESSION_HOURS, TOKENIZER_DOCS = 1, 3.5, 400_000
+    print("설정 셀을 건너뛰어 기본값을 씁니다 (STEP=1)\\n")
+
 TIERS = ["configs/tier0_50m.json", "configs/tier1_100m.json", "configs/tier2_200m.json"]
+if not 1 <= STEP <= 3:
+    raise SystemExit(f"STEP은 1, 2, 3 중 하나여야 합니다 (지금 {{STEP}})")
 TIER = TIERS[STEP - 1]
 
 # ── TPU 확인 ────────────────────────────────────────────────────
@@ -173,11 +181,12 @@ def build_colab() -> dict:
 
 ### 처음 한 번만
 1. **런타임 → 런타임 유형 변경 → TPU v5e-1**
-2. 위에서부터 셀을 순서대로 실행 (`Shift+Enter`)
+2. **런타임 → 모두 실행** ← 셀을 하나씩 누르지 마세요. 순서가 어긋납니다
 3. Drive 연결 권한 허용 — 체크포인트를 여기 저장합니다
 
 ### 그 다음부터
-**다시 실행하면 이어집니다.** 짧은 세션을 여러 번 돌려도 진행이 누적됩니다.
+**런타임 → 모두 실행** 을 다시 누르면 이어집니다.
+짧은 세션을 여러 번 돌려도 진행이 누적됩니다.
 
 ### ⚠️ 무료 Colab의 제약 두 가지
 - **탭을 닫으면 멈춥니다.** 백그라운드 실행은 유료 기능입니다. 절전도 꺼두세요.
