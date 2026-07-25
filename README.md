@@ -112,36 +112,29 @@ python3 scripts/budget.py
 
 ## Kaggle에서 돌리기
 
-노트북 2개를 순서대로 실행한다.
+노트북 하나로 끝난다. 토크나이저가 없으면 알아서 만들고, 있으면 건너뛴다.
 
-### 01_tokenizer (CPU 세션 — TPU 쿼터 안 씀)
+**처음 한 번만**
 
-1. Kaggle에 [notebooks/01_tokenizer.ipynb](notebooks/01_tokenizer.ipynb) 업로드
-2. Settings → Accelerator **None** · Internet **On**
-3. 첫 셀의 `GITHUB_URL` 또는 코드 Dataset 설정
-4. **Save Version → Save & Run All**
+1. [notebooks/cati_train.ipynb](notebooks/cati_train.ipynb) 다운로드
+2. Kaggle → New Notebook → File → **Import Notebook** → 업로드
+3. Settings → Accelerator **TPU VM v3-8** · Internet **On**
+4. **Save Version → Save & Run All** → 창 닫기
 
-FineWeb2 한국어 스트리밍을 검증하고 토크나이저를 학습한다. 10~30분.
+**그 다음부터** — `Save & Run All` 만 다시 누른다. 체크포인트에서 자동으로 이어진다.
 
-### 02_train (TPU 세션)
-
-1. [notebooks/02_train.ipynb](notebooks/02_train.ipynb) 업로드
-2. Settings → Accelerator **TPU VM v3-8** · Internet **On**
-3. Add Input → Notebook Output → 01_tokenizer
-4. `TIER` 를 고른다: `tier0_50m` → `tier1_100m` → `tier2_350m`
-5. **Save Version → Save & Run All**
-
-`Save & Run All` 로 돌리면 브라우저를 닫아도 백그라운드에서 9시간을 다 쓴다.
-세션이 끝나면 **다시 Save & Run All** 하면 체크포인트에서 이어진다.
-
-| 티어 | TPU 시간 | 세션 수 |
+| TIER | TPU 시간 | 세션 수 |
 |---|---|---|
-| tier0_50m | 1.1h | 1 |
-| tier1_100m | 4.4h | 1 |
-| tier2_350m | 97.4h | 11 (5주) |
+| `tier0_50m` | 1.1h | 1 |
+| `tier1_100m` | 4.4h | 1 |
+| `tier2_350m` | 97.4h | 11 (5주) |
 
-체크포인트를 세션 간에 넘기려면 Add-ons → Secrets 에 `KAGGLE_USERNAME` / `KAGGLE_KEY`
-를 넣는다. 없으면 매 세션 이전 Output을 Input으로 직접 붙여야 한다.
+`TIER` 를 위 순서대로 바꿔가며 돌린다. 50M·100M 은 97시간을 태우기 전에
+파이프라인을 검증하고 스케일링 법칙을 확보하는 단계다.
+
+**350M 전에 한 번**: Add-ons → Secrets 에 `KAGGLE_USERNAME` / `KAGGLE_KEY` 를 넣는다.
+세션 11번을 이어가려면 체크포인트가 세션 밖에서 살아남아야 한다.
+50M·100M 은 한 세션에 끝나므로 없어도 된다.
 
 ## 현재 상태
 
