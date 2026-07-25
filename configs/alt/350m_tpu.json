@@ -26,7 +26,7 @@
   "anneal_tokens": 3750000000,
   "_anneal_note": "전체의 15%. 도서/문학/에세이 중심. 학습률을 0으로 감쇠.",
   "optimizer": "adamw",
-  "lr": 6.0e-4,
+  "lr": 0.0006,
   "lr_schedule": "warmup_cosine",
   "warmup_ratio": 0.01,
   "min_lr_ratio": 0.1,
@@ -34,5 +34,6 @@
   "grad_clip": 1.0,
   "beta1": 0.9,
   "beta2": 0.95,
-  "global_batch_tokens": 1048576
+  "global_batch_tokens": 1048576,
+  "_status": "보류 — Kaggle에 TPU 옵션이 없어 T4로는 479시간(16주)이 걸린다. TRC 승인 등으로 TPU를 확보하면 이 설정으로 되돌린다."
 }

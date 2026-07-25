@@ -173,8 +173,9 @@ def test_bf16_stability():
 
 def test_config_validation():
     print("\n[8] 설정 검증")
-    base = CatiConfig.load(ROOT / "configs" / "tier2_350m.json").__dict__
-    for bad, why in [({"n_heads": 15}, "n_heads가 n_kv_heads의 배수가 아님"),
+    base = CatiConfig.load(ROOT / "configs" / "tier2_200m.json").__dict__
+    # 실제로 겪은 사고: 200M 설정에 n_heads=14/n_kv_heads=4 를 넣었다가 여기서 잡혔다.
+    for bad, why in [({"n_kv_heads": 4}, "n_kv_heads가 n_heads(14)의 약수가 아님"),
                      ({"head_dim": 63}, "n_heads*head_dim != d_model")]:
         try:
             CatiConfig(**{**base, **bad})

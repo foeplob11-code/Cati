@@ -2,7 +2,7 @@
 
 오프라인으로 구동하는 에이전틱 AI 비서. 모델은 **처음부터 학습**한다.
 
-- **모델**: cati-350m (343.5M dense) — Kaggle 무료 TPU로 25B 토큰 사전학습
+- **모델**: cati-200m (201M dense) — Colab 무료 TPU v5e-1 로 15B 토큰 사전학습
 - **배포**: MacBook M1, 2.5GB 단일 앱, 네트워크 불필요
 - **성격**: MCP 도구를 호출하는 에이전트 · 글쓰기 특화
 - **마스코트**: 하얀 고양이
@@ -18,9 +18,10 @@ configs/          # 티어 설정 (사다리) + 토크나이저 설정 — 전�
   tokenizer.json    vocab 49152, NFC, 바이트 레벨 BPE
   tier0_50m.json    파이프라인 검증용
   tier1_100m.json   제품의 의도 분류 라우터
-  tier2_350m.json   최종 출시 모델
+  tier2_200m.json   최종 출시 모델
+  alt/350m_tpu.json TPU 확보 시 복귀용
   data.json         데이터 소스 — 여기만 보면 된다
-train             # ← 학습 실행 (Kaggle API)
+tokenizer         # ← Kaggle 토크나이저 실행 (선택)
 cati/             # 학습 인프라
   model.py          Llama 계열 디코더 (Flax) · HF 가중치 호환
   session.py        9시간 세션 가드 (정상종료/업로드 데드라인)
@@ -34,27 +35,28 @@ scripts/
   train.py            사전학습
   budget.py           파라미터/계산량/쿼터 계산기 — 설정 바꿀 때마다 돌린다
   train_tokenizer.py  토크나이저 학습 및 압축률 측정
-  kaggle_run.py       ./train 의 알맹이
+  kaggle_run.py       ./tokenizer 의 알맹이
   make_notebooks.py   노트북 생성기
   test_resume.py      재개 정확성 검증 (35 검사)
   test_model.py       모델 검증 (24 검사)
 notebooks/
-  cati_train.ipynb  Kaggle 노트북 (셀 4개)
+  cati_colab.ipynb      학습 (Colab TPU v5e-1)
+  cati_tokenizer.ipynb  토크나이저 (Kaggle, 선택)
 artifacts/        # 학습 산출물 (git 제외)
 app/              # Tauri 앱 (제품 트랙, 미착수)
 ```
 
 ## 체크포인트/재개
 
-Kaggle 세션은 9시간에 예고 없이 죽고, 새 세션은 `/kaggle/working` 이 비어 있다.
-97시간짜리 350M 런은 최소 11번 끊긴다. 그래서 재개는 **정확해야** 한다.
+무료 Colab은 예고 없이 끊기고 `/content` 는 사라진다. 73시간짜리 200M 런은
+수십 번 끊긴다. 그래서 재개는 **정확해야** 한다.
 
 ```python
 from cati import ResumableRun, ResumableStream, HFSource, default_store
 
-run = ResumableRun("cati-350m", "/kaggle/working/ckpt",
-                   params=343_500_000, target_tokens=25_000_000_000,
-                   store=default_store(), save_every=500)
+run = ResumableRun("cati-200m", "/content/ckpt",
+                   params=201_000_000, target_tokens=15_000_000_000,
+                   store=default_store(), save_every=200, publish_every=200)
 
 stream = ResumableStream([HFSource("ko", "HuggingFaceFW/fineweb-2", "kor_Hang"),
                           HFSource("en", "HuggingFaceFW/fineweb-edu", "sample-10BT")],
@@ -68,7 +70,7 @@ while True:
     if not run.tick(step, tokens, time.monotonic() - t0, arrays, stream,
                     loss=loss, step_tokens=n):
         break
-run.finish(arrays, step, tokens, stream)              # 저장 + Kaggle Dataset 발행
+run.finish(arrays, step, tokens, stream)              # 저장 + 스토어 발행
 ```
 
 복원되는 상태: 파라미터 · 옵티마이저 · 스텝 · 누적 토큰 · **데이터 소비 위치** ·
@@ -89,10 +91,10 @@ run.finish(arrays, step, tokens, stream)              # 저장 + Kaggle Dataset 
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
-설정이 Kaggle 쿼터 안에 들어오는지 확인 (설정을 바꿀 때마다 실행):
+설정이 쿼터 안에 들어오는지 확인 (설정을 바꿀 때마다 실행):
 
 ```bash
-python3 scripts/budget.py
+python3 scripts/budget.py v5e1     # t4x2 / p100 / tpuv3 도 가능
 ```
 
 토크나이저 파이프라인 검증 (인터넷 불필요):
@@ -101,10 +103,10 @@ python3 scripts/budget.py
 .venv/bin/python scripts/train_tokenizer.py smoke
 ```
 
-토크나이저 본 학습 (Kaggle, 인터넷 켜기):
+토크나이저 본 학습 (인터넷 필요):
 
 ```bash
-.venv/bin/python scripts/train_tokenizer.py train --docs 2000000
+.venv/bin/python scripts/train_tokenizer.py train --docs 400000
 ```
 
 ---
@@ -115,50 +117,51 @@ python3 scripts/budget.py
 
 1. **토크나이저는 W1에 확정하고 전 티어가 공유한다.**
    중간에 바꾸면 사다리 실험 결과가 전부 비교 불가능해진다.
-2. **Kaggle TPU 쿼터는 이월되지 않는다.** 주 20시간이 상한이라
-   97시간짜리 350M 런은 최소 5주의 벽시계 시간이 필요하다.
+2. **가속기가 bf16을 지원해야 지금 코드가 돈다.** Kaggle의 T4/P100은 지원하지 않는다.
+   fp16 경로를 새로 쓰는 대신 Colab v5e-1을 쓴다.
 3. **체크포인트/재개 인프라를 학습 코드보다 먼저 만든다.**
-   Kaggle 세션은 9시간에 강제 종료된다.
+   무료 Colab은 예고 없이 끊기고 백그라운드 실행도 안 된다.
 
-## Kaggle에서 돌리기
+## 학습 돌리기
 
 → **[시작하기.md](시작하기.md)**
 
+**Colab TPU v5e-1** 에서 학습한다. Kaggle에는 TPU 옵션이 없다 (T4/P100뿐).
+T4로 200M은 111시간(16주)이고 bf16도 없어 fp16 loss scaling을 따로 써야 한다.
+v5e-1은 bf16 네이티브라 지금 코드가 그대로 돈다.
+
+| 가속기 | 실효 성능 | bf16 | 200M 소요 |
+|---|---|---|---|
+| GPU P100 (Kaggle) | 8 TFLOPS | ✗ | 630h |
+| GPU T4 x2 (Kaggle) | 30 TFLOPS | ✗ | 168h |
+| **TPU v5e-1 (Colab)** | **69 TFLOPS** | ✓ | **73h** |
+| TPU v3-8 (TRC) | 147 TFLOPS | ✓ | 34h |
+
 ```bash
-./train
+python3 scripts/budget.py v5e1     # 쿼터 안에 들어오는지 확인
 ```
 
-브라우저를 열지 않는다. Kaggle API가 노트북을 올리고 실행까지 시킨다.
-체크포인트가 있으면 이어서 학습한다.
+| STEP | 모델 | v5e-1 시간 | 배수 |
+|---|---|---|---|
+| 1 | 50M | 2.3h | 42x |
+| 2 | 100M | 9.5h | 41x |
+| 3 | 200M | 73h | 75x |
 
-| 명령 | 하는 일 |
-|---|---|
-| `./train` | 학습 시작 / 이어하기 |
-| `./train 1` `2` `3` | 티어 지정 (50M / 100M / 350M) |
-| `./train status` | 실행 상태 |
-| `./train log` | 로그 |
-| `./train watch` | 끝날 때까지 지켜보기 |
+합계 85h / 160h (버퍼 47%). 주 20시간이면 4.2주.
 
-| 티어 | TPU 시간 | 세션 수 |
-|---|---|---|
-| 50M | 1.1h | 1 |
-| 100M | 4.4h | 1 |
-| 350M | 97.4h | 11 (5주) |
-
-체크포인트 데이터셋은 티어별로 분리한다 (`cati-ckpt-50m` 등).
-하나로 합치면 티어를 바꿀 때 남의 체크포인트를 집어와 구조 불일치로 죽는다.
+토크나이저만 Kaggle에서 만들어 Colab 시간을 아낄 수 있다 (선택): `./tokenizer`
 
 ## 현재 상태
 
-- [x] 계획 확정 (PLAN.md v0.4)
-- [x] 티어 설정 + 쿼터 검증 (102.9h / 160h, 버퍼 36%)
+- [x] 계획 확정 (PLAN.md)
+- [x] 티어 설정 + 쿼터 검증 (85h / 160h, 버퍼 47%)
 - [x] 토크나이저 설정 확정 + 파이프라인 검증
 - [x] 체크포인트/재개 인프라 — `test_resume.py` 35/35
 - [x] 모델 (JAX/Flax) — `test_model.py` 24/24, 파라미터 수 계산과 정확히 일치
 - [x] 토큰 패킹 + 학습 루프 — CPU 스모크에서 재개까지 확인
-- [x] Kaggle 노트북 + `./train` 한 줄 실행
-- [ ] **`./train` 으로 50M** ← 여기서부터 사람 손이 필요
-- [ ] 100M → 350M
+- [x] Colab 노트북 (학습) + Kaggle 노트북 (토크나이저)
+- [ ] **Colab에서 50M** ← 여기서부터 사람 손이 필요
+- [ ] 100M → 200M
 - [ ] `HFSource` 네이티브 재개 실증 (첫 세션이 자동 확인)
 - [ ] MFU 실측 (35% 가정 검증 — 25% 미만이면 토큰 수 하향)
 - [ ] 제품 트랙: Tauri 셸 + llama.cpp

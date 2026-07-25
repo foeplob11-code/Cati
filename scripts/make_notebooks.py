@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Kaggle 노트북 생성기.
+"""노트북 생성기.
 
 .ipynb 를 손으로 쓰면 JSON 이스케이프 때문에 금방 깨진다. 여기서 만든다.
 
-    python3 scripts/make_notebooks.py   →  notebooks/cati_train.ipynb
+    python3 scripts/make_notebooks.py
 
-설계 목표는 **사람 손을 줄이는 것**이다. 5주 동안 세션을 13번 돌려야 하므로
-매 세션이 "Save & Run All 누르기" 하나로 끝나야 한다. 그래서
-  · 셀을 3개로 줄였다 (준비 / 학습 / 결과)
-  · 고칠 것은 맨 위 숫자 하나뿐이다 (STEP = 1 → 2 → 3)
-  · 없는 것(토크나이저·체크포인트)은 알아서 만들거나 찾는다
+만들어지는 것
+    notebooks/cati_colab.ipynb      학습 — Colab TPU v5e-1 (메인)
+    notebooks/cati_tokenizer.ipynb  토크나이저 — Kaggle (선택, Colab 시간 절약용)
+
+역할이 갈리는 이유: Kaggle에는 TPU 옵션이 없다 (T4/P100뿐). T4로 200M을 돌리면
+111시간이 걸리고 bf16도 없어 fp16 loss scaling을 따로 써야 한다. 반면 Colab의
+v5e-1은 bf16 네이티브라 지금 코드가 그대로 돈다. 그래서 학습은 Colab에서 한다.
+Kaggle은 TPU가 필요 없는 토크나이저 학습에만 쓴다.
 """
 from __future__ import annotations
 
@@ -31,205 +34,6 @@ def code(text: str) -> dict:
             "outputs": [], "source": text.strip("\n").splitlines(keepends=True)}
 
 
-PREPARE = f'''
-# ══ 준비 ══ 코드·패키지·토크나이저를 알아서 챙긴다. 볼 것 없다.
-import os, shutil, socket, subprocess, sys
-from pathlib import Path
-
-TIERS = ["configs/tier0_50m.json", "configs/tier1_100m.json", "configs/tier2_350m.json"]
-SHORT = ["50m", "100m", "350m"]
-TIER, NAME = TIERS[STEP - 1], SHORT[STEP - 1]
-
-# ── 코드 ────────────────────────────────────────────────────────
-CATI = Path("/kaggle/working/Cati")
-if CATI.exists():
-    subprocess.run(["git", "-C", str(CATI), "pull", "-q"], check=False)
-else:
-    subprocess.run(["git", "clone", "--depth", "1",
-                    "{GITHUB_URL}", str(CATI)], check=True)
-os.chdir(CATI)
-sys.path.insert(0, str(CATI))
-
-# ── 패키지 ──────────────────────────────────────────────────────
-subprocess.run([sys.executable, "-m", "pip", "install", "-q",
-                "tokenizers>=0.22", "datasets>=3.0", "kaggle"], check=False)
-
-# ── 환경 ────────────────────────────────────────────────────────
-import jax
-devs = jax.devices()
-IS_TPU = devs[0].platform == "tpu"
-print(f"디바이스   {{len(devs)}}개 · {{devs[0].device_kind}}"
-      f"{{'' if IS_TPU else '  ← TPU 아님'}}")
-if not IS_TPU:
-    print("           토크나이저는 이대로 만들 수 있다 (오히려 TPU 쿼터를 아낀다).")
-    print("           학습은 건너뛴다 — 끝나면 Settings에서 TPU VM v3-8 로 바꾸고 다시 실행.")
-try:
-    socket.create_connection(("huggingface.co", 443), timeout=10).close()
-    print("인터넷     OK")
-except OSError:
-    raise SystemExit("인터넷이 꺼져 있다 → Settings → Internet → On")
-
-# ── Kaggle 저장소 (세션 간 인계용) ──────────────────────────────
-# 티어마다 별도 데이터셋을 쓴다. 하나로 합치면 티어를 바꿀 때
-# 남의 체크포인트를 집어와서 구조 불일치로 죽는다.
-STORE = False
-try:
-    from kaggle_secrets import UserSecretsClient
-    s = UserSecretsClient()
-    os.environ["KAGGLE_USERNAME"] = s.get_secret("KAGGLE_USERNAME")
-    os.environ["KAGGLE_KEY"] = s.get_secret("KAGGLE_KEY")
-    os.environ["CATI_CKPT_DATASET"] = f"cati-ckpt-{{NAME}}"
-    STORE = True
-    print(f"저장소     {{os.environ['KAGGLE_USERNAME']}}/cati-ckpt-{{NAME}}")
-except Exception:
-    print("저장소     없음 (로컬 저장만) — 350M 전에 Secrets를 넣을 것")
-
-# ── 토크나이저: 없으면 만들고 있으면 재사용 ─────────────────────
-# 전 티어가 같은 토크나이저를 공유해야 사다리 실험을 비교할 수 있다.
-TOK = Path("artifacts/tokenizer/tokenizer.json")
-TOK.parent.mkdir(parents=True, exist_ok=True)
-
-
-def _find():
-    if TOK.exists():
-        return TOK, "저장소"
-    hits = list(Path("/kaggle/input").rglob("tokenizer.json"))
-    if hits:
-        return hits[0], "입력 마운트"
-    if STORE:
-        from cati.store import KaggleDatasetStore
-        got = KaggleDatasetStore(os.environ["KAGGLE_USERNAME"],
-                                 "cati-tokenizer").fetch_latest(Path("/kaggle/working/_tok"))
-        if got and (Path(got) / "tokenizer.json").exists():
-            return Path(got) / "tokenizer.json", "Kaggle Dataset"
-    return None, None
-
-
-found, how = _find()
-if found is None:
-    print("토크나이저 없음 → 새로 학습 (20~40분, 처음 한 번만)\\n")
-    subprocess.run([sys.executable, "scripts/train_tokenizer.py",
-                    "train", "--docs", str(TOKENIZER_DOCS)], check=True)
-    assert TOK.exists(), "학습이 끝났는데 파일이 없다 — 위 출력 확인"
-    if STORE:
-        from cati.store import KaggleDatasetStore
-        stage = Path("/kaggle/working/_tok_pub")
-        stage.mkdir(parents=True, exist_ok=True)
-        shutil.copy(TOK, stage / "tokenizer.json")
-        KaggleDatasetStore(os.environ["KAGGLE_USERNAME"],
-                           "cati-tokenizer").publish(stage, "cati tokenizer")
-else:
-    if found != TOK:
-        shutil.copy(found, TOK)
-    print(f"토크나이저 재사용 ({{how}})")
-
-from tokenizers import Tokenizer
-_t = Tokenizer.from_file(str(TOK))
-_p = "고양이는 창가에 앉아 오래 밖을 바라보았다."
-_r = len(_p) / len(_t.encode(_p).ids)
-print(f"           vocab {{_t.get_vocab_size():,}} · 한국어 {{_r:.2f}} 글자/토큰 "
-      f"({{'통과' if _r >= 2.0 else '미달 — 알려주세요'}})")
-print(f"\\n준비 완료 → {{NAME.upper()}} 학습으로 넘어갑니다")
-'''
-
-
-TRAIN = '''
-# ══ 학습 ══ 오래 걸린다. 창 닫아도 백그라운드에서 계속 돈다.
-#
-#  loss  10.8 에서 시작해 내려가야 한다
-#  MFU   35% 근처면 계획대로. 25% 미만이면 알려주세요
-import subprocess, sys
-
-if not IS_TPU:
-    # T4/P100은 bf16 하드웨어가 없고, 350M을 돌리면 596시간이 걸린다.
-    # 세션 하나를 헛되게 태우지 않도록 여기서 멈춘다.
-    print("가속기가 TPU가 아니라 학습을 건너뜁니다.\\n")
-    print("토크나이저는 위에서 만들어졌습니다. 이제 이것만 하면 됩니다:")
-    print("  1. 우측 Settings → Accelerator → 'TPU VM v3-8'")
-    print("  2. Save Version → Save & Run All")
-    print("\\n(TPU 쿼터를 아꼈습니다 — 토크나이저를 GPU/CPU에서 만들었으니까요)")
-else:
-    cmd = [sys.executable, "scripts/train.py", "--tier", TIER,
-           "--session-hours", str(SESSION_HOURS)]
-    if not STORE:
-        cmd.append("--no-store")
-    subprocess.run(cmd, check=False)
-'''
-
-
-RESULT = '''
-# ══ 결과 ══ 다음에 뭘 할지 알려준다.
-import json, shutil
-from pathlib import Path
-
-steps = sorted(Path("artifacts/ckpt").glob("*/step_*"))
-if not IS_TPU:
-    print("┌─────────────────────────────────────────────┐")
-    print("│  토크나이저 완료                             │")
-    print("│  → Settings에서 TPU VM v3-8 로 바꾸고         │")
-    print("│    Save & Run All 을 다시 누르세요            │")
-    print("└─────────────────────────────────────────────┘")
-elif not steps:
-    print("체크포인트가 없다 — 위 학습 셀 출력을 확인할 것")
-else:
-    latest = steps[-1]
-    m = json.loads((latest / "meta.json").read_text())
-    pct = m["tokens"] / m["target_tokens"]
-    print(f"{latest.parent.name}   {m['step']:,}스텝   "
-          f"{m['tokens']/1e9:.2f}B / {m['target_tokens']/1e9:.0f}B 토큰   {pct:.0%}")
-    print(f"누적 TPU {m.get('device_hours_used', 0):.1f}시간 · 세션 #{m.get('session_index', 1)}")
-
-    if not STORE:
-        dst = Path("/kaggle/working/ckpt") / latest.parent.name / latest.name
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        if not dst.exists():
-            shutil.copytree(latest, dst)
-
-    print()
-    if pct < 1.0:
-        print("┌─────────────────────────────────────────────┐")
-        print("│  아직 진행 중                                │")
-        print("│  → Save & Run All 을 다시 누르세요            │")
-        print("└─────────────────────────────────────────────┘")
-    elif STEP < 3:
-        print("┌─────────────────────────────────────────────┐")
-        print(f"│  {latest.parent.name} 완료                            │")
-        print(f"│  → 맨 위 STEP 을 {STEP + 1} 로 바꾸고 다시 실행       │")
-        print("└─────────────────────────────────────────────┘")
-    else:
-        print("┌─────────────────────────────────────────────┐")
-        print("│  사전학습 전부 완료                          │")
-        print("│  → 다음은 도서 어닐링 (문체 학습)            │")
-        print("└─────────────────────────────────────────────┘")
-'''
-
-
-def build() -> dict:
-    return notebook([
-        md('''
-# Cati 학습
-
-### 처음 한 번만
-1. 우측 **Settings** → Accelerator **TPU VM v3-8**, Internet **On**
-2. 우측 상단 **Save Version → Save & Run All** → 창 닫기
-
-### 그 다음부터
-**Save & Run All 만 다시 누르세요.** 알아서 이어집니다.
-
-맨 아래 셀이 다음에 뭘 할지 알려줍니다.
-'''),
-        code('''
-STEP = 1               # 1=50M(1시간)   2=100M(4.5시간)   3=350M(5주)
-
-SESSION_HOURS = 9.0    # Kaggle TPU 세션 한계
-TOKENIZER_DOCS = 400_000
-'''),
-        code(PREPARE),
-        code(TRAIN),
-        code(RESULT),
-    ])
-
-
 def notebook(cells: list[dict]) -> dict:
     return {
         "cells": cells,
@@ -242,19 +46,248 @@ def notebook(cells: list[dict]) -> dict:
     }
 
 
+# ===========================================================================
+# Colab — 학습 (메인)
+# ===========================================================================
+COLAB_PREPARE = f'''
+# ══ 준비 ══ Drive 연결 · 코드 · 토크나이저를 알아서 챙긴다.
+import os, shutil, subprocess, sys
+from pathlib import Path
+
+TIERS = ["configs/tier0_50m.json", "configs/tier1_100m.json", "configs/tier2_200m.json"]
+TIER = TIERS[STEP - 1]
+
+# ── TPU 확인 ────────────────────────────────────────────────────
+import jax
+devs = jax.devices()
+IS_TPU = devs[0].platform == "tpu"
+print(f"디바이스   {{len(devs)}}개 · {{devs[0].device_kind}}")
+if not IS_TPU:
+    print("           ⚠️ TPU가 아니다 → 런타임 → 런타임 유형 변경 → TPU v5e-1")
+    print("           토크나이저는 이대로 만들 수 있다. 학습은 건너뛴다.")
+
+# ── Google Drive ────────────────────────────────────────────────
+# 무료 Colab은 예고 없이 끊기고 /content 는 사라진다.
+# 체크포인트가 세션 밖에서 살아남는 유일한 길이다.
+from google.colab import drive
+drive.mount("/content/drive")
+DRIVE = Path("/content/drive/MyDrive/cati")
+DRIVE.mkdir(parents=True, exist_ok=True)
+print(f"Drive      {{DRIVE}}")
+
+# ── 코드 ────────────────────────────────────────────────────────
+CATI = Path("/content/Cati")
+if CATI.exists():
+    subprocess.run(["git", "-C", str(CATI), "pull", "-q"], check=False)
+else:
+    subprocess.run(["git", "clone", "--depth", "1",
+                    "{GITHUB_URL}", str(CATI)], check=True)
+os.chdir(CATI)
+sys.path.insert(0, str(CATI))
+subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                "tokenizers>=0.22", "datasets>=3.0", "flax", "optax",
+                "orbax-checkpoint"], check=False)
+
+# ── 토크나이저: Drive에 있으면 재사용, 없으면 만들어 Drive에 둔다 ──
+# 전 티어가 같은 토크나이저를 공유해야 사다리 실험을 비교할 수 있다.
+TOK = Path("artifacts/tokenizer/tokenizer.json")
+TOK.parent.mkdir(parents=True, exist_ok=True)
+DRIVE_TOK = DRIVE / "tokenizer.json"
+
+if DRIVE_TOK.exists():
+    shutil.copy(DRIVE_TOK, TOK)
+    print("토크나이저 Drive에서 재사용")
+elif TOK.exists():
+    shutil.copy(TOK, DRIVE_TOK)
+    print("토크나이저 저장소 커밋본 사용")
+else:
+    print("토크나이저 없음 → 새로 학습 (20~40분, 처음 한 번만)\\n")
+    subprocess.run([sys.executable, "scripts/train_tokenizer.py",
+                    "train", "--docs", str(TOKENIZER_DOCS)], check=True)
+    assert TOK.exists(), "학습이 끝났는데 파일이 없다 — 위 출력 확인"
+    shutil.copy(TOK, DRIVE_TOK)
+    print(f"\\n토크나이저를 Drive에 저장: {{DRIVE_TOK}}")
+
+from tokenizers import Tokenizer
+_t = Tokenizer.from_file(str(TOK))
+_p = "고양이는 창가에 앉아 오래 밖을 바라보았다."
+_r = len(_p) / len(_t.encode(_p).ids)
+print(f"           vocab {{_t.get_vocab_size():,}} · 한국어 {{_r:.2f}} 글자/토큰 "
+      f"({{'통과' if _r >= 2.0 else '미달 — 알려주세요'}})")
+print("\\n준비 완료")
+'''
+
+COLAB_TRAIN = '''
+# ══ 학습 ══
+#  ⚠️ 이 탭을 닫지 마세요. 무료 Colab은 백그라운드 실행이 안 됩니다.
+#     노트북 절전도 꺼두세요. 끊기면 마지막 체크포인트부터 이어집니다.
+#
+#  loss  10.8(=ln 49152) 에서 시작해 내려가야 한다
+#  MFU   35% 근처면 계획대로. 25% 미만이면 알려주세요
+import os, subprocess, sys
+
+if not IS_TPU:
+    print("TPU가 아니라 학습을 건너뜁니다.")
+    print("런타임 → 런타임 유형 변경 → TPU v5e-1 로 바꾸고 다시 실행하세요.")
+else:
+    # 체크포인트는 /content 에 쓰고(빠름) Drive로 발행한다(살아남음).
+    os.environ["CATI_CKPT_STORE"] = str(DRIVE / "ckpt")
+    subprocess.run([sys.executable, "scripts/train.py", "--tier", TIER,
+                    "--session-hours", str(SESSION_HOURS),
+                    "--ckpt", "/content/ckpt",
+                    "--quota-hours", "160"], check=False)
+'''
+
+COLAB_RESULT = '''
+# ══ 결과 ══
+import json
+from pathlib import Path
+
+steps = (sorted(Path("/content/ckpt").glob("step_*")) or
+         sorted((DRIVE / "ckpt").glob("step_*")))
+if not IS_TPU:
+    print("토크나이저 완료 → 런타임을 TPU v5e-1 로 바꾸고 다시 실행하세요")
+elif not steps:
+    print("체크포인트가 없다 — 위 학습 셀 출력을 확인할 것")
+else:
+    m = json.loads((steps[-1] / "meta.json").read_text())
+    pct = m["tokens"] / m["target_tokens"]
+    print(f"{m['step']:,}스텝   {m['tokens']/1e9:.2f}B / "
+          f"{m['target_tokens']/1e9:.0f}B 토큰   {pct:.1%}")
+    print(f"누적 {m.get('device_hours_used', 0):.1f}시간 · 세션 #{m.get('session_index', 1)}")
+    print(f"Drive:  {DRIVE / 'ckpt'}")
+    print()
+    if pct < 1.0:
+        print("아직 진행 중  →  이 노트북을 다시 실행하세요 (이어집니다)")
+    elif STEP < 3:
+        print(f"이 티어 완료  →  맨 위 STEP 을 {STEP + 1} 로 바꾸고 다시 실행")
+    else:
+        print("사전학습 완료  →  다음은 도서 어닐링 (문체 학습)")
+'''
+
+
+def build_colab() -> dict:
+    return notebook([
+        md('''
+# Cati 학습 — Colab TPU v5e-1
+
+### 처음 한 번만
+1. **런타임 → 런타임 유형 변경 → TPU v5e-1**
+2. 위에서부터 셀을 순서대로 실행 (`Shift+Enter`)
+3. Drive 연결 권한 허용 — 체크포인트를 여기 저장합니다
+
+### 그 다음부터
+**다시 실행하면 이어집니다.** 짧은 세션을 여러 번 돌려도 진행이 누적됩니다.
+
+### ⚠️ 무료 Colab의 제약 두 가지
+- **탭을 닫으면 멈춥니다.** 백그라운드 실행은 유료 기능입니다. 절전도 꺼두세요.
+- **사용량 제한이 유동적입니다.** 갑자기 끊길 수 있습니다.
+
+끊겨도 200스텝마다 Drive에 저장되므로 잃는 건 몇 분치입니다.
+
+### 순서
+| STEP | 모델 | v5e-1 시간 | 과학습 배수 |
+|---|---|---|---|
+| 1 | 50M | 2.3h | 42× |
+| 2 | 100M | 9.5h | 41× |
+| 3 | **200M** | **72h** | **75×** |
+
+50M → 100M 을 먼저 끝내세요. 72시간을 태우기 전에 파이프라인을 검증하고
+스케일링 법칙으로 200M 설정이 맞는지 확인하는 단계입니다.
+'''),
+        code('''
+STEP = 1               # 1=50M   2=100M   3=200M
+
+SESSION_HOURS = 3.5    # 무료 Colab 세션은 보통 3~4시간. 짧게 잡아 자주 저장한다
+TOKENIZER_DOCS = 400_000
+'''),
+        code(COLAB_PREPARE),
+        code(COLAB_TRAIN),
+        code(COLAB_RESULT),
+    ])
+
+
+# ===========================================================================
+# Kaggle — 토크나이저 전용 (선택)
+# ===========================================================================
+KAGGLE_TOK = f'''
+# ══ 토크나이저 학습 ══
+import os, shutil, socket, subprocess, sys
+from pathlib import Path
+
+CATI = Path("/kaggle/working/Cati")
+if CATI.exists():
+    subprocess.run(["git", "-C", str(CATI), "pull", "-q"], check=False)
+else:
+    subprocess.run(["git", "clone", "--depth", "1",
+                    "{GITHUB_URL}", str(CATI)], check=True)
+os.chdir(CATI)
+sys.path.insert(0, str(CATI))
+subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                "tokenizers>=0.22", "datasets>=3.0"], check=False)
+
+try:
+    socket.create_connection(("huggingface.co", 443), timeout=10).close()
+except OSError:
+    raise SystemExit("인터넷이 꺼져 있다 → Settings → Internet → On")
+
+TOK = Path("artifacts/tokenizer/tokenizer.json")
+TOK.parent.mkdir(parents=True, exist_ok=True)
+if not TOK.exists():
+    subprocess.run([sys.executable, "scripts/train_tokenizer.py",
+                    "train", "--docs", str(TOKENIZER_DOCS)], check=True)
+
+from tokenizers import Tokenizer
+_t = Tokenizer.from_file(str(TOK))
+_p = "고양이는 창가에 앉아 오래 밖을 바라보았다."
+_r = len(_p) / len(_t.encode(_p).ids)
+print(f"\\nvocab {{_t.get_vocab_size():,}} · 한국어 {{_r:.2f}} 글자/토큰 "
+      f"({{'통과' if _r >= 2.0 else '미달 — 알려주세요'}})")
+print("기준선: SmolLM2(같은 vocab) 0.47 · Qwen3(vocab 3배) 1.39 · 목표 2.0 이상")
+
+out = Path("/kaggle/working/tokenizer.json")
+shutil.copy(TOK, out)
+print(f"\\n저장: {{out}}  ({{out.stat().st_size/1e6:.2f}} MB)")
+print("\\n다음: 이 파일을 내려받아 Google Drive의 MyDrive/cati/ 에 넣으세요.")
+print("      그러면 Colab 노트북이 바로 씁니다.")
+'''
+
+
+def build_tokenizer_nb() -> dict:
+    return notebook([
+        md('''
+# Cati 토크나이저 — Kaggle
+
+**학습은 Colab에서 합니다** (`cati_colab.ipynb`). Kaggle에는 TPU 옵션이 없어서요.
+이 노트북은 토크나이저만 만듭니다 — 귀한 Colab 시간을 30분 아끼려고요.
+
+건너뛰어도 됩니다. Colab 노트북이 토크나이저가 없으면 알아서 만듭니다.
+
+### 하는 법
+1. Settings → Accelerator **None** · Internet **On**
+2. **Save Version → Save & Run All** → 창 닫기
+3. 30분 뒤 Output의 `tokenizer.json` 을 내려받아
+   Google Drive의 `MyDrive/cati/` 에 넣기
+'''),
+        code('TOKENIZER_DOCS = 400_000'),
+        code(KAGGLE_TOK),
+    ])
+
+
 def main():
     OUT.mkdir(exist_ok=True)
-    for old in ("01_tokenizer.ipynb", "02_train.ipynb"):
+    for old in ("01_tokenizer.ipynb", "02_train.ipynb", "cati_train.ipynb"):
         p = OUT / old
         if p.exists():
             p.unlink()
             print(f"삭제: notebooks/{old}")
 
-    nb = build()
-    path = OUT / "cati_train.ipynb"
-    path.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\n")
-    n_code = sum(1 for c in nb["cells"] if c["cell_type"] == "code")
-    print(f"{path.relative_to(ROOT)}  (셀 {len(nb['cells'])}개 / 코드 {n_code}개)")
+    for name, nb in [("cati_colab", build_colab()),
+                     ("cati_tokenizer", build_tokenizer_nb())]:
+        path = OUT / f"{name}.ipynb"
+        path.write_text(json.dumps(nb, indent=1, ensure_ascii=False) + "\n")
+        n_code = sum(1 for c in nb["cells"] if c["cell_type"] == "code")
+        print(f"{path.relative_to(ROOT)}  (셀 {len(nb['cells'])}개 / 코드 {n_code}개)")
 
 
 if __name__ == "__main__":

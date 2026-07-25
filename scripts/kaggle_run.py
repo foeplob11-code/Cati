@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Kaggle 학습을 명령 한 개로 실행한다.
+"""Kaggle에서 토크나이저 학습을 명령 한 개로 돌린다. (선택 사항)
 
-브라우저를 열지 않는다. Kaggle API가 노트북을 올리고 실행까지 시킨다.
+**학습 본체는 Colab에서 한다** (notebooks/cati_colab.ipynb).
+Kaggle에는 TPU 옵션이 없어서 200M 학습에 111시간이 걸린다.
 
-    ./train            학습 시작 / 이어하기
-    ./train 2          STEP 을 2로 바꿔서 실행 (1=50M 2=100M 3=350M)
-    ./train status     진행 상황
-    ./train log        로그 보기
-    ./train watch      끝날 때까지 지켜보기
+이 스크립트는 TPU가 필요 없는 토크나이저만 Kaggle에서 만든다.
+귀한 Colab 시간 30분을 아끼려는 목적이고, 건너뛰어도 된다 —
+Colab 노트북이 토크나이저가 없으면 알아서 만든다.
+
+    ./tokenizer            토크나이저 학습 시작
+    ./tokenizer status     진행 상황
+    ./tokenizer log        로그 보기
+    ./tokenizer get        완성된 tokenizer.json 가져오기
+    ./tokenizer watch      끝날 때까지 지켜보기
 """
 from __future__ import annotations
 
@@ -19,27 +24,24 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-NB = ROOT / "notebooks" / "cati_train.ipynb"
+NB = ROOT / "notebooks" / "cati_tokenizer.ipynb"
 STAGE = ROOT / "artifacts" / "kaggle_push"
 OUTDIR = ROOT / "artifacts" / "kaggle_out"
-STEP_FILE = ROOT / "artifacts" / ".kaggle_step"
 CREDS = Path.home() / ".kaggle" / "kaggle.json"
 
-SLUG = "cati-train"
-TITLE = "Cati Train"
-TIER_NAMES = {1: "50M (약 1시간)", 2: "100M (약 4.5시간)", 3: "350M (5주, 세션 11번)"}
+SLUG = "cati-tokenizer"
+TITLE = "Cati Tokenizer"
 
 SETUP_HELP = f"""
 Kaggle 인증 파일이 없습니다. 한 번만 해두면 됩니다.
 
   1. https://www.kaggle.com/settings  접속
   2. API 항목 → [Create New Token] → kaggle.json 다운로드
-  3. 아래 두 줄을 터미널에 붙여넣기
+  3. 아래를 터미널에 붙여넣기
 
-     mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/
-     chmod 600 ~/.kaggle/kaggle.json
+     mkdir -p ~/.kaggle && mv ~/Downloads/kaggle.json ~/.kaggle/ && chmod 600 ~/.kaggle/kaggle.json
 
-  그 다음 다시 ./train 를 실행하세요.
+안 되면 그냥 건너뛰세요. Colab 노트북이 토크나이저를 알아서 만듭니다.
 
 (파일 위치: {CREDS})
 """
@@ -67,8 +69,8 @@ def username() -> str:
     return name
 
 
-def run(args: list[str], **kw) -> subprocess.CompletedProcess:
-    return subprocess.run([kaggle_bin(), *args], capture_output=True, text=True, **kw)
+def run(args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run([kaggle_bin(), *args], capture_output=True, text=True)
 
 
 def clean(text: str) -> str:
@@ -78,44 +80,11 @@ def clean(text: str) -> str:
                      if l.strip() and not any(s in l for s in skip))
 
 
-# ---------------------------------------------------------------------------
-def read_step() -> int:
-    if STEP_FILE.exists():
-        try:
-            return max(1, min(3, int(STEP_FILE.read_text().strip())))
-        except ValueError:
-            pass
-    return 1
-
-
-def patch_notebook(step: int) -> dict:
-    """노트북의 STEP 값을 바꿔서 반환한다 (원본은 건드리지 않는다)."""
-    nb = json.loads(NB.read_text())
-    patched = False
-    for cell in nb["cells"]:
-        if cell["cell_type"] != "code":
-            continue
-        for i, line in enumerate(cell["source"]):
-            if line.lstrip().startswith("STEP"):
-                _, _, tail = line.partition("#")
-                cell["source"][i] = f"STEP = {step}" + (f"   # {tail.strip()}"
-                                                        if tail.strip() else "") + "\n"
-                patched = True
-                break
-        if patched:
-            break
-    if not patched:
-        sys.exit("노트북에서 STEP 줄을 찾지 못했습니다. "
-                 "python3 scripts/make_notebooks.py 로 다시 만드세요.")
-    return nb
-
-
-def stage(step: int, user: str) -> Path:
+def stage(user: str) -> Path:
     if STAGE.exists():
         shutil.rmtree(STAGE)
     STAGE.mkdir(parents=True)
-    (STAGE / NB.name).write_text(
-        json.dumps(patch_notebook(step), indent=1, ensure_ascii=False) + "\n")
+    shutil.copy(NB, STAGE / NB.name)
     (STAGE / "kernel-metadata.json").write_text(json.dumps({
         "id": f"{user}/{SLUG}",
         "title": TITLE,
@@ -123,8 +92,7 @@ def stage(step: int, user: str) -> Path:
         "language": "python",
         "kernel_type": "notebook",
         "is_private": True,
-        "enable_gpu": False,
-        "enable_tpu": True,
+        "enable_gpu": False,      # 토크나이저는 CPU 작업이다
         "enable_internet": True,
         "dataset_sources": [],
         "competition_sources": [],
@@ -134,39 +102,17 @@ def stage(step: int, user: str) -> Path:
     return STAGE
 
 
-# ---------------------------------------------------------------------------
-def cmd_push(step: int | None) -> int:
+def cmd_push() -> int:
     user = username()
-    step = step or read_step()
-    print(f"STEP {step} — {TIER_NAMES[step]}")
-    print(f"대상  {user}/{SLUG}\n")
-
-    d = stage(step, user)
-    r = run(["kernels", "push", "-p", str(d)])
-    out = clean(r.stdout + r.stderr)
-
-    if r.returncode != 0 and "tpu" in out.lower():
-        # 일부 API 버전은 enable_tpu를 모른다. 그 경우 한 번만 UI에서 설정하면 유지된다.
-        print("TPU 설정이 API로 안 먹습니다. 가속기 없이 올립니다.")
-        meta = json.loads((d / "kernel-metadata.json").read_text())
-        meta.pop("enable_tpu", None)
-        (d / "kernel-metadata.json").write_text(json.dumps(meta, indent=2))
-        r = run(["kernels", "push", "-p", str(d)])
-        out = clean(r.stdout + r.stderr)
-        print(f"\n⚠️ 노트북 페이지에서 Accelerator를 'TPU VM v3-8'로 한 번만 설정하세요.\n"
-              f"   https://www.kaggle.com/code/{user}/{SLUG}/edit\n"
-              f"   한 번 설정하면 이후 ./train 에서 유지됩니다.")
-
-    print(out or "(출력 없음)")
+    print(f"토크나이저 학습 (약 30분) → {user}/{SLUG}\n")
+    r = run(["kernels", "push", "-p", str(stage(user))])
+    print(clean(r.stdout + r.stderr) or "(출력 없음)")
     if r.returncode != 0:
         print("\n올리기 실패. 위 메시지를 확인하세요.")
         return r.returncode
-
-    STEP_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STEP_FILE.write_text(str(step))
     print(f"\n실행 시작됨.  https://www.kaggle.com/code/{user}/{SLUG}")
-    print("  진행 확인:  ./train status")
-    print("  로그 보기:  ./train log")
+    print("  진행 확인:  ./tokenizer status")
+    print("  결과 받기:  ./tokenizer get")
     return 0
 
 
@@ -177,7 +123,7 @@ def cmd_status() -> int:
     return r.returncode
 
 
-def cmd_log(tail: int = 60) -> int:
+def _fetch_output() -> Path | None:
     user = username()
     if OUTDIR.exists():
         shutil.rmtree(OUTDIR)
@@ -185,30 +131,52 @@ def cmd_log(tail: int = 60) -> int:
     r = run(["kernels", "output", f"{user}/{SLUG}", "-p", str(OUTDIR)])
     if r.returncode != 0:
         print(clean(r.stdout + r.stderr))
-        print("\n아직 출력이 없습니다. ./train status 로 실행 중인지 확인하세요.")
-        return r.returncode
+        print("\n아직 출력이 없습니다. ./tokenizer status 로 확인하세요.")
+        return None
+    return OUTDIR
 
+
+def cmd_log(tail: int = 60) -> int:
+    if _fetch_output() is None:
+        return 1
     logs = sorted(OUTDIR.rglob("*.log")) + sorted(OUTDIR.rglob("*.txt"))
     if not logs:
         print(f"출력 파일: {[p.name for p in OUTDIR.rglob('*') if p.is_file()][:10]}")
         return 0
-    text = logs[0].read_text(errors="replace").splitlines()
+    lines = logs[0].read_text(errors="replace").splitlines()
     print(f"─── {logs[0].name} (마지막 {tail}줄) ───")
-    print("\n".join(text[-tail:]))
+    print("\n".join(lines[-tail:]))
     return 0
 
 
-def cmd_watch(interval: int = 300) -> int:
+def cmd_get() -> int:
+    """완성된 토크나이저를 저장소로 가져온다."""
+    if _fetch_output() is None:
+        return 1
+    hits = list(OUTDIR.rglob("tokenizer.json"))
+    if not hits:
+        print("tokenizer.json 이 없습니다. 아직 학습 중일 수 있습니다.")
+        return 1
+    dst = ROOT / "artifacts" / "tokenizer" / "tokenizer.json"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(hits[0], dst)
+    print(f"받았습니다: {dst.relative_to(ROOT)}  ({dst.stat().st_size/1e6:.2f} MB)")
+    print("\n이걸 커밋해두면 Colab이 코드와 함께 받아갑니다:")
+    print("  git add -f artifacts/tokenizer/tokenizer.json")
+    print("  git commit -m '토크나이저 확정' && git push")
+    return 0
+
+
+def cmd_watch(interval: int = 120) -> int:
     user = username()
     print(f"{user}/{SLUG} 를 {interval//60}분마다 확인합니다. Ctrl+C 로 중단.\n")
     try:
         while True:
             r = run(["kernels", "status", f"{user}/{SLUG}"])
             line = clean(r.stdout + r.stderr).replace("\n", " ")
-            stamp = time.strftime("%H:%M:%S")
-            print(f"[{stamp}] {line}")
+            print(f"[{time.strftime('%H:%M:%S')}] {line}")
             if any(w in line.lower() for w in ("complete", "error", "cancel")):
-                print("\n종료됨.  ./train log  로 결과 확인")
+                print("\n종료됨.  ./tokenizer get  으로 결과 받기")
                 return 0
             time.sleep(interval)
     except KeyboardInterrupt:
@@ -219,14 +187,14 @@ def cmd_watch(interval: int = 300) -> int:
 def main() -> int:
     args = sys.argv[1:]
     if not args:
-        return cmd_push(None)
+        return cmd_push()
     a = args[0]
-    if a in ("1", "2", "3"):
-        return cmd_push(int(a))
     if a == "status":
         return cmd_status()
     if a == "log":
         return cmd_log(int(args[1]) if len(args) > 1 else 60)
+    if a == "get":
+        return cmd_get()
     if a == "watch":
         return cmd_watch()
     if a in ("-h", "--help", "help"):

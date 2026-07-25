@@ -46,6 +46,7 @@ class ResumableRun:
         save_every: int = 500,
         log_every: int = 20,
         keep_last: int = 2,
+        publish_every: int = 0,
     ):
         self.name = name
         self.root = Path(root)
@@ -59,6 +60,10 @@ class ResumableRun:
         self.target_tokens = target_tokens
         self.save_every = save_every
         self.log_every = log_every
+        # Colab 무료는 예고 없이 끊긴다 — finish()가 안 돌 수 있으므로 주기적으로 발행한다.
+        # 스토어가 Google Drive 같은 로컬 마운트면 복사라서 싸다.
+        # Kaggle Dataset처럼 업로드가 비싼 경우엔 0으로 두고 세션 끝에만 올린다.
+        self.publish_every = publish_every
 
         self.log = MetricLog(self.root / "metrics.jsonl")
         self._stream = None
@@ -120,6 +125,10 @@ class ResumableRun:
 
         if due or done or expired:
             self._save(step, tokens, arrays, stream or self._stream)
+            if (self.publish_every and not done and not expired
+                    and step % self.publish_every == 0 and self.mgr.store is not None):
+                ok = self.mgr.publish(f"{self.name} step {step} (중간)")
+                self.log.log(event="publish", step=step, ok=ok)
 
         if done:
             self.stop_reason = STOP_TARGET
