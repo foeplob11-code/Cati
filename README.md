@@ -19,17 +19,27 @@ configs/          # 티어 설정 (사다리) + 토크나이저 설정 — 전�
   tier0_50m.json    파이프라인 검증용
   tier1_100m.json   제품의 의도 분류 라우터
   tier2_350m.json   최종 출시 모델
+  data.json         데이터 소스 — 여기만 보면 된다
+train             # ← 학습 실행 (Kaggle API)
 cati/             # 학습 인프라
+  model.py          Llama 계열 디코더 (Flax) · HF 가중치 호환
   session.py        9시간 세션 가드 (정상종료/업로드 데드라인)
   stream.py         재개 가능한 데이터 스트림 ← 가장 틀리기 쉬운 부분
+  packing.py        문서 → 고정 길이 배치 (남은 토큰 버퍼도 재개 대상)
   checkpoint.py     원자적 저장 + 배열 백엔드 (Orbax / numpy)
   store.py          Kaggle Dataset 영속화
   telemetry.py      JSONL 로그 + MFU/쿼터 추정
   runner.py         위 전부를 묶은 세션 오케스트레이터
 scripts/
+  train.py            사전학습
   budget.py           파라미터/계산량/쿼터 계산기 — 설정 바꿀 때마다 돌린다
   train_tokenizer.py  토크나이저 학습 및 압축률 측정
-  test_resume.py      재개 정확성 검증 (29 검사)
+  kaggle_run.py       ./train 의 알맹이
+  make_notebooks.py   노트북 생성기
+  test_resume.py      재개 정확성 검증 (35 검사)
+  test_model.py       모델 검증 (24 검사)
+notebooks/
+  cati_train.ipynb  Kaggle 노트북 (셀 4개)
 artifacts/        # 학습 산출물 (git 제외)
 app/              # Tauri 앱 (제품 트랙, 미착수)
 ```
@@ -146,9 +156,9 @@ python3 scripts/budget.py
 - [x] 체크포인트/재개 인프라 — `test_resume.py` 35/35
 - [x] 모델 (JAX/Flax) — `test_model.py` 24/24, 파라미터 수 계산과 정확히 일치
 - [x] 토큰 패킹 + 학습 루프 — CPU 스모크에서 재개까지 확인
-- [x] Kaggle 노트북 2개
-- [ ] **01_tokenizer 실행** ← 여기서부터 사람 손이 필요
-- [ ] 02_train 으로 50M → 100M → 350M
-- [ ] `HFSource` 네이티브 재개 실증 (01 노트북이 자동 확인)
+- [x] Kaggle 노트북 + `./train` 한 줄 실행
+- [ ] **`./train` 으로 50M** ← 여기서부터 사람 손이 필요
+- [ ] 100M → 350M
+- [ ] `HFSource` 네이티브 재개 실증 (첫 세션이 자동 확인)
 - [ ] MFU 실측 (35% 가정 검증 — 25% 미만이면 토큰 수 하향)
 - [ ] 제품 트랙: Tauri 셸 + llama.cpp
