@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Kaggle 학습을 명령 한 개로. 사용법: ./train --help
+set -e
+cd "$(dirname "$0")"
+PY=".venv/bin/python"
+[ -x "$PY" ] || PY="python3"
+exec "$PY" scripts/kaggle_run.py "$@"
