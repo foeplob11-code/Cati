@@ -1,7 +1,6 @@
 {
   "_comment": "데이터 소스는 여기만 본다. 학습 코드가 이 파일을 읽어 스트리밍한다.",
-  "_note": "다운로드하지 않는다. 25B 토큰 = 50GB인데 로컬 디스크 여유가 55GB뿐이라 스트리밍한다.",
-
+  "_note": "다운로드하지 않는다. 15B 토큰이면 uint16으로 30GB인데 로컬 디스크 여유가 55GB뿐이고, 애초에 학습은 Colab에서 돈다. 스트리밍한다.",
   "pretrain": {
     "_comment": "전체의 85%. 웹 텍스트로 기본 능력을 만든다.",
     "sources": [
@@ -10,42 +9,62 @@
         "repo": "HuggingFaceFW/fineweb-2",
         "config": "kor_Hang",
         "field": "text",
-        "weight": 0.40,
+        "weight": 0.65,
         "repeat": true,
-        "_note": "한국어 주력. 10B 토큰 목표라 2~3에폭 반복될 수 있다."
+        "_note": "한국어 주력. 15B x 0.65 = 9.75B 토큰. 압축률 2.5 기준 원문 약 24B자. FineWeb2 한국어로 1에폭 안에 커버된다."
       },
       {
         "name": "en",
         "repo": "HuggingFaceFW/fineweb-edu",
         "config": "sample-10BT",
         "field": "text",
-        "weight": 0.45,
-        "repeat": true
+        "weight": 0.25,
+        "repeat": true,
+        "_note": "영어는 보조. 완전히 빼지 않는 이유는 교차언어 전이(추론 능력)와 영어 입력 처리 때문이다."
       },
       {
         "name": "code",
         "repo": "codeparrot/codeparrot-clean",
         "config": null,
         "field": "content",
-        "weight": 0.15,
+        "weight": 0.1,
         "repeat": true,
         "_note": "JSON·구조화된 출력 능력에 기여한다. 도구 호출에 필요.",
         "_history": "bigcode/the-stack-smol 은 2026-07 시점에 gated로 바뀌어 인증 없이 못 받는다. 접근 불가 소스는 자동으로 건너뛰고 가중치가 재정규화된다."
       }
-    ]
+    ],
+    "_mix_rationale": "한국어 글쓰기가 목표이고 200M은 용량이 작다. 두 언어에 반씩 나누면 양쪽 다 어중간해지므로 한국어에 몰았다. 대가로 영어 능력과 일반 지식이 약해진다 — 한국어 오프라인 비서에는 맞는 교환이다. ⚠️ 200M 학습을 시작한 뒤에는 바꾸지 않는다 (데이터 순서 재현성이 깨진다)."
   },
-
   "anneal": {
     "_comment": "전체의 15%. 6주차에 채운다. 문체가 여기서 결정된다.",
     "_status": "미정 — W6에 확정",
     "candidates": [
-      {"name": "위키문헌 한국어", "url": "ko.wikisource.org", "note": "저작권 만료 문학. 신청 불필요"},
-      {"name": "공유마당", "url": "gongu.copyright.or.kr", "note": "저작권 만료 국내 저작물. 신청 불필요"},
-      {"name": "Project Gutenberg", "url": "gutenberg.org", "note": "영어 퍼블릭 도메인 도서"},
-      {"name": "모두의 말뭉치", "url": "corpus.korean.go.kr", "note": "신문·문어. 신청·승인 필요 (2주)"},
-      {"name": "한국어 위키백과", "repo": "wikimedia/wikipedia", "config": "20231101.ko"}
+      {
+        "name": "위키문헌 한국어",
+        "url": "ko.wikisource.org",
+        "note": "저작권 만료 문학. 신청 불필요"
+      },
+      {
+        "name": "공유마당",
+        "url": "gongu.copyright.or.kr",
+        "note": "저작권 만료 국내 저작물. 신청 불필요"
+      },
+      {
+        "name": "Project Gutenberg",
+        "url": "gutenberg.org",
+        "note": "영어 퍼블릭 도메인 도서"
+      },
+      {
+        "name": "모두의 말뭉치",
+        "url": "corpus.korean.go.kr",
+        "note": "신문·문어. 신청·승인 필요 (2주)"
+      },
+      {
+        "name": "한국어 위키백과",
+        "repo": "wikimedia/wikipedia",
+        "config": "20231101.ko"
+      }
     ]
   },
-
   "_license_rule": "배포 제품이므로 만료 저작물 또는 라이선스가 명시된 것만 쓴다. 나무위키 덤프는 CC BY-NC-SA(비영리)라 사용 불가."
 }

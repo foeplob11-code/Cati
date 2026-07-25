@@ -222,12 +222,27 @@ class ResumableStream:
             "chars_seen": self.chars_seen,
             "exhausted": sorted(self._exhausted),
             "epochs": dict(self.epochs),
+            # 가중치를 기록해 둔다. 학습 중간에 바꾸면 RNG 상태는 복원되는데
+            # 확률 분포가 달라져서 데이터 믹스가 조용히 어긋난다.
+            "weights": {s.name: w for s, w in zip(self.sources, self.weights)},
             # random.Random 상태는 튜플이라 JSON을 위해 리스트로 바꾼다.
             "rng": {"version": version, "internal": list(internal), "gauss": gauss},
             "sources": {s.name: s.state_dict() for s in self.sources},
         }
 
     def load_state_dict(self, state: dict) -> None:
+        saved = state.get("weights")
+        if saved is not None:
+            now = {s.name: w for s, w in zip(self.sources, self.weights)}
+            changed = {k for k in set(saved) | set(now)
+                       if abs(saved.get(k, 0.0) - now.get(k, 0.0)) > 1e-6}
+            if changed:
+                print("  ⚠️ 데이터 가중치가 체크포인트와 다르다:")
+                for k in sorted(changed):
+                    print(f"     {k}: {saved.get(k, 0.0):.2f} → {now.get(k, 0.0):.2f}")
+                print("     이 런의 데이터 믹스가 앞뒤로 달라진다. "
+                      "의도한 것이 아니면 configs/data.json 을 되돌릴 것.")
+
         self.seed = state["seed"]
         self.docs_seen = state["docs_seen"]
         self.chars_seen = state["chars_seen"]
