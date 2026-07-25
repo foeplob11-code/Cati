@@ -16,7 +16,7 @@
   "seq_len": 2048,
   "train_tokens": 2000000000,
   "optimizer": "adamw",
-  "lr": 1.2e-3,
+  "lr": 0.0012,
   "lr_schedule": "warmup_cosine",
   "warmup_ratio": 0.02,
   "min_lr_ratio": 0.1,
@@ -24,5 +24,8 @@
   "grad_clip": 1.0,
   "beta1": 0.9,
   "beta2": 0.95,
-  "global_batch_tokens": 262144
+  "global_batch_tokens": 262144,
+  "micro_batch_per_device": 32,
+  "_batch_note": "128시퀀스 = 32 x 1대 x 누적 4회. 기본값 8이면 누적 16회가 되어 작은 행렬곱을 16번 나눠 돌리게 되고 MFU가 떨어진다. v5e-1 16GB 기준 어텐션 점수 행렬(fp32) 4.3GB + 블록 입력 0.5GB + 파라미터·Adam 0.6GB ≈ 5.4GB.",
+  "remat_policy": "full"
 }

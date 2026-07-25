@@ -16,7 +16,7 @@
   "seq_len": 2048,
   "train_tokens": 4000000000,
   "optimizer": "adamw",
-  "lr": 1.0e-3,
+  "lr": 0.001,
   "lr_schedule": "warmup_cosine",
   "warmup_ratio": 0.02,
   "min_lr_ratio": 0.1,
@@ -24,5 +24,8 @@
   "grad_clip": 1.0,
   "beta1": 0.9,
   "beta2": 0.95,
-  "global_batch_tokens": 524288
+  "global_batch_tokens": 524288,
+  "micro_batch_per_device": 32,
+  "_batch_note": "256시퀀스 = 32 x 1대 x 누적 8회. v5e-1 16GB 기준 약 7.8GB.",
+  "remat_policy": "full"
 }

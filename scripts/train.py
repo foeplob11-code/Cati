@@ -34,7 +34,30 @@ from cati.packing import TokenPacker, prefetch
 from cati.stream import HFSource
 
 ROOT = Path(__file__).resolve().parent.parent
-TPU_V3_8_PEAK = 420e12
+
+# 디바이스 1개당 bf16 피크 TFLOPS. MFU를 엉뚱한 기준으로 재면 판단이 전부 틀어진다.
+# (v3-8 값 420을 하드코딩해뒀다가 v5e-1에서 MFU를 2.1배 낮게 봤다)
+DEVICE_PEAK_TFLOPS = {
+    "TPU v5 lite": 197.0,   # v5e, 칩당 코어 1개
+    "TPU v5e": 197.0,
+    "TPU v5p": 459.0,
+    "TPU v4": 137.5,        # 칩 275, 코어 2개
+    "TPU v3": 52.5,         # v3-8 전체 420 / 8코어
+    "TPU v2": 22.5,         # v2-8 전체 180 / 8코어
+}
+DEFAULT_PEAK_TFLOPS = 197.0
+
+
+def device_peak_flops(devices) -> tuple[float, str]:
+    """전체 피크 FLOPS와 근거 문자열."""
+    kind = devices[0].device_kind
+    for name, per_dev in DEVICE_PEAK_TFLOPS.items():
+        if name.lower() in kind.lower():
+            total = per_dev * len(devices) * 1e12
+            return total, f"{kind} x{len(devices)} = {total/1e12:.0f} TFLOPS bf16"
+    total = DEFAULT_PEAK_TFLOPS * len(devices) * 1e12
+    return total, (f"{kind} x{len(devices)} — 피크값 미등록, "
+                   f"{DEFAULT_PEAK_TFLOPS:.0f} TFLOPS/대로 가정")
 
 
 # ---------------------------------------------------------------------------
@@ -101,10 +124,40 @@ def main(argv=None):
     ap.add_argument("--smoke", action="store_true", help="CPU에서 작은 모델로 몇 스텝만")
     ap.add_argument("--max-steps", type=int, default=None)
     ap.add_argument("--no-store", action="store_true", help="원격 발행 생략")
+    ap.add_argument("--bench", type=int, default=0, metavar="N",
+                    help="N스텝만 돌려 처리량/MFU를 재고 끝낸다. 체크포인트를 "
+                         "저장하지 않아 본 학습에 영향이 없다. 73시간을 태우기 전에 "
+                         "설정을 비교할 때 쓴다.")
+    ap.add_argument("--set", action="append", default=[], metavar="키=값",
+                    help="설정 임시 변경 (예: --set micro_batch_per_device=32 "
+                         "--set seq_len=1024). 파일을 고치지 않는다.")
     args = ap.parse_args(argv)
 
     raw = json.loads((ROOT / args.tier).read_text())
-    cfg = CatiConfig.load(ROOT / args.tier)
+    for item in args.set:
+        if "=" not in item:
+            sys.exit(f"--set 은 키=값 형식이어야 한다: {item!r}")
+        k, v = item.split("=", 1)
+        if k in raw and isinstance(raw[k], bool):
+            raw[k] = v.lower() in ("1", "true", "yes")
+        elif k in raw:
+            raw[k] = type(raw[k])(v)
+        else:
+            # 설정 파일에 없어도 코드 기본값이 있는 키(micro_batch_per_device 등)를
+            # 실험할 수 있어야 한다. 타입은 값에서 추론한다.
+            for cast in (int, float):
+                try:
+                    raw[k] = cast(v)
+                    break
+                except ValueError:
+                    continue
+            else:
+                raw[k] = v
+            print(f"[--set] {k} 은 설정 파일에 없던 키다 (기본값을 덮어쓴다)")
+        print(f"[--set] {k} = {raw[k]!r}")
+    (ROOT / "artifacts").mkdir(exist_ok=True)
+    cfg = CatiConfig(**{k: v for k, v in raw.items()
+                        if k in CatiConfig.__dataclass_fields__})
     data_cfg = json.loads((ROOT / args.data).read_text())
 
     devices = jax.devices()
@@ -132,11 +185,15 @@ def main(argv=None):
     target_tokens = raw["train_tokens"] if args.phase == "pretrain" else raw["anneal_tokens"]
     tokens_per_step = raw["global_batch_tokens"]
     total_steps = args.max_steps or max(1, target_tokens // tokens_per_step)
+    if args.bench:
+        total_steps, args.no_store = args.bench, True
+        print(f"[벤치] {args.bench}스텝만 돌리고 끝낸다. 체크포인트를 저장하지 않는다.")
 
     print("=" * 66)
     print(f"{cfg.name}  ·  {args.phase}")
     print("=" * 66)
-    print(f"디바이스        {n_dev}x {devices[0].device_kind}")
+    peak_flops, peak_why = device_peak_flops(devices)
+    print(f"디바이스        {peak_why}")
     print(f"목표            {target_tokens/1e9:.2f}B 토큰 / {total_steps:,} 스텝")
     print(f"스텝당 토큰     {tokens_per_step:,}  (시퀀스 {seqs_per_step})")
     print(f"마이크로배치    디바이스당 {micro_per_dev} x {n_dev}대 = {micro_total}"
@@ -197,7 +254,12 @@ def main(argv=None):
     packer = TokenPacker(stream, tok, cfg.seq_len, micro_total, eos_id=eos)
 
     # ---- 러너 ---------------------------------------------------------
-    ckpt_root = Path(args.ckpt) if args.ckpt else ROOT / "artifacts" / "ckpt" / cfg.name
+    ckpt_root = (ROOT / "artifacts" / "bench" if args.bench
+                 else Path(args.ckpt) if args.ckpt
+                 else ROOT / "artifacts" / "ckpt" / cfg.name)
+    if args.bench:
+        import shutil as _sh
+        _sh.rmtree(ckpt_root, ignore_errors=True)
     n_params_est = raw.get("_params_estimate") or 0
     run = ResumableRun(
         cfg.name, ckpt_root,
@@ -205,11 +267,12 @@ def main(argv=None):
         target_tokens=target_tokens,
         store=None if args.no_store or args.smoke else default_store(),
         guard=SessionGuard(limit_hours=args.session_hours),
-        peak_flops=TPU_V3_8_PEAK, quota_hours_total=args.quota_hours,
-        save_every=raw.get("save_every_steps", 200),
+        peak_flops=peak_flops, quota_hours_total=args.quota_hours,
+        save_every=0 if args.bench else raw.get("save_every_steps", 200),
         log_every=raw.get("log_every_steps", 10),
-        publish_every=(args.publish_every if args.publish_every is not None
-                       else 4 * raw.get("save_every_steps", 200)),
+        publish_every=0 if args.bench else (
+            args.publish_every if args.publish_every is not None
+            else 4 * raw.get("save_every_steps", 200)),
     )
 
     state, step, tokens = run.start(init_fn, packer)
@@ -260,8 +323,20 @@ def main(argv=None):
                         step_tokens=tokens_per_step):
             break
 
-    run.finish({"params": params, "opt_state": opt_state}, step, tokens,
-               _Snapshot(last_state, packer))
+    if args.bench:
+        r = run.budget.report(tokens, run.device_hours)
+        print("\n" + "=" * 66)
+        print(f"벤치 결과  {cfg.name}")
+        print("=" * 66)
+        print(f"  처리량        {r['tokens_per_sec']:,.0f} tok/s")
+        print(f"  MFU           {r['mfu']:.1%}   (피크 {peak_flops/1e12:.0f} TFLOPS)")
+        print(f"  스텝 시간     {sum(run.budget._times)/len(run.budget._times):.2f}s")
+        print(f"  목표까지      {r['hours_needed']:.0f}시간 "
+              f"({r['hours_needed']/20:.1f}주, 주 20h 기준)")
+        print("=" * 66)
+    else:
+        run.finish({"params": params, "opt_state": opt_state}, step, tokens,
+                   _Snapshot(last_state, packer))
 
     tp = packer.throughput(time.monotonic() - started)
     print("\n" + "=" * 66)
