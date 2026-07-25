@@ -109,9 +109,11 @@ def main():
 
     # ---- 스모크 모드: 작게 줄인다 ------------------------------------
     if args.smoke:
+        # n_kv_heads도 같이 줄여야 한다 — 350M은 4인데 n_heads를 2로 낮추면
+        # "n_heads는 n_kv_heads의 배수" 조건이 깨진다.
         cfg = CatiConfig(**{**cfg.__dict__, "vocab_size": 4096, "n_layers": 2,
-                            "d_model": 128, "n_heads": 2, "head_dim": 64,
-                            "d_ff": 256, "seq_len": 64})
+                            "d_model": 128, "n_heads": 2, "n_kv_heads": 1,
+                            "head_dim": 64, "d_ff": 256, "seq_len": 64})
         raw = {**raw, "global_batch_tokens": 64 * 2 * n_dev,
                "micro_batch_per_device": 2}
         args.max_steps = args.max_steps or 6
@@ -136,10 +138,12 @@ def main():
     print(f"스텝당 토큰     {tokens_per_step:,}  (시퀀스 {seqs_per_step})")
     print(f"마이크로배치    디바이스당 {micro_per_dev} x {n_dev}대 = {micro_total}"
           f"  · 누적 {accum}회")
-    print(f"remat           {'켬' if not args.smoke else '끔(스모크)'}")
+    remat_policy = raw.get("remat_policy", "full")
+    print(f"remat           {'끔(스모크)' if args.smoke else f'켬 · 정책 {remat_policy}'}")
 
     # ---- 모델/옵티마이저 ---------------------------------------------
-    model = CatiLM(cfg, dtype=jnp.bfloat16, remat=not args.smoke)
+    model = CatiLM(cfg, dtype=jnp.bfloat16, remat=not args.smoke,
+                   remat_policy=remat_policy)
     opt, schedule, warmup = make_optimizer(cfg, raw, total_steps)
     print(f"학습률          {raw['lr']:.1e} · 웜업 {warmup:,} 스텝")
 

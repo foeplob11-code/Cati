@@ -159,6 +159,11 @@ class CatiLM(nn.Module):
     # 어텐션 점수 행렬이 (배치 × 헤드 × T × T) 라서 저장하면 TPU 메모리를 넘긴다.
     # 350M/2048토큰/디바이스당8 기준: 저장하면 층당 1GB, remat하면 층당 35MB.
     remat: bool = False
+    # remat은 순전파를 한 번 더 계산하므로 약 30%의 추가 연산을 낸다.
+    # "dots_no_batch"는 배치 차원이 없는 행렬곱(=Dense 층 출력)만 저장하고
+    # 어텐션은 다시 계산한다 — 메모리가 허용되면 이쪽이 빠르다.
+    # 350M은 여유가 빠듯해서 기본값은 안전한 "full"이다. MFU 실측 후 판단한다.
+    remat_policy: str = "full"
 
     @nn.compact
     def __call__(self, tokens):
@@ -173,7 +178,16 @@ class CatiLM(nn.Module):
         cos, sin = rope_tables(c.head_dim, t, c.rope_theta)
         mask = jnp.tril(jnp.ones((t, t), dtype=bool))[None, None, :, :]
 
-        block_cls = nn.remat(Block) if self.remat else Block
+        if self.remat:
+            policies = {
+                "full": None,
+                "dots_no_batch": jax.checkpoint_policies.dots_with_no_batch_dims_saveable,
+            }
+            if self.remat_policy not in policies:
+                raise ValueError(f"remat_policy는 {sorted(policies)} 중 하나여야 한다")
+            block_cls = nn.remat(Block, policy=policies[self.remat_policy])
+        else:
+            block_cls = Block
         for i in range(c.n_layers):
             x = block_cls(c, self.dtype, name=f"layers_{i}")(x, cos, sin, mask)
         x = RMSNorm(c.norm_eps, name="norm")(x)
