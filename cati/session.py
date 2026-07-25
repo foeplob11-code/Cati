@@ -35,11 +35,17 @@ class SessionGuard:
     started_at: float = field(default_factory=time.monotonic)
 
     def __post_init__(self):
+        if self.limit_hours <= 0:
+            raise ValueError("limit_hours는 0보다 커야 한다")
         if self.save_reserve_minutes <= self.upload_reserve_minutes:
             raise ValueError("save_reserve는 upload_reserve보다 커야 한다")
-        limit = self.limit_hours * 3600
-        if self.save_reserve_minutes * 60 >= limit:
-            raise ValueError("save_reserve가 세션 한계보다 크다")
+
+        # 짧은 세션에서는 예약 시간을 비례로 줄인다.
+        # Colab은 준비 작업을 하고 나면 30분만 남는 경우도 있는데,
+        # 고정 35분 예약이면 세션을 아예 시작할 수 없게 된다.
+        limit_min = self.limit_hours * 60
+        self.save_reserve_minutes = min(self.save_reserve_minutes, limit_min * 0.25)
+        self.upload_reserve_minutes = min(self.upload_reserve_minutes, limit_min * 0.10)
 
     @property
     def elapsed(self) -> float:

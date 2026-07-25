@@ -51,8 +51,12 @@ def notebook(cells: list[dict]) -> dict:
 # ===========================================================================
 COLAB_PREPARE = f'''
 # ══ 준비 ══ 저장소 연결 · 코드 · 토크나이저를 알아서 챙긴다.
-import os, shutil, subprocess, sys
+import os, shutil, subprocess, sys, time
 from pathlib import Path
+
+# 세션 시작 시각. 토크나이저 학습에 40분을 쓰면 학습에 남는 시간도 그만큼 줄어든다.
+# 이걸 학습 셀에 넘겨줘야 세션 가드가 실제 남은 시간을 안다.
+NB_START = time.monotonic()
 
 # 설정 셀을 건너뛰고 이 셀부터 실행해도 죽지 않게 기본값을 채운다.
 # (Colab에서는 '런타임 → 모두 실행'을 쓰는 게 안전하다)
@@ -163,18 +167,26 @@ COLAB_TRAIN = '''
 #
 #  loss  10.8(=ln 49152) 에서 시작해 내려가야 한다
 #  MFU   35% 근처면 계획대로. 25% 미만이면 알려주세요
-import os, subprocess, sys
+import os, subprocess, sys, time
 
 if not IS_TPU:
     print("TPU가 아니라 학습을 건너뜁니다.")
     print("런타임 → 런타임 유형 변경 → TPU v5e-1 로 바꾸고 다시 실행하세요.")
 else:
-    # 체크포인트는 /content 에 쓰고(빠름) 저장소로 발행한다(살아남음).
-    # 저장소는 준비 셀이 환경변수로 정해뒀다.
-    subprocess.run([sys.executable, "scripts/train.py", "--tier", TIER,
-                    "--session-hours", str(SESSION_HOURS),
-                    "--ckpt", "/content/ckpt",
-                    "--quota-hours", "160"], check=False)
+    # 준비 단계(토크나이저 등)에 쓴 시간을 빼야 세션 가드가 실제 남은 시간을 안다.
+    used = (time.monotonic() - NB_START) / 3600
+    left = SESSION_HOURS - used
+    print(f"준비에 {used*60:.0f}분 사용 · 학습에 {left:.2f}시간 배정\n")
+    if left < 0.2:
+        print("남은 시간이 너무 적습니다. 이 노트북을 다시 실행하세요 —")
+        print("토크나이저는 이미 만들어졌으니 다음엔 바로 학습으로 갑니다.")
+    else:
+        # 체크포인트는 /content 에 쓰고(빠름) 저장소로 발행한다(살아남음).
+        # 저장소는 준비 셀이 환경변수로 정해뒀다.
+        subprocess.run([sys.executable, "scripts/train.py", "--tier", TIER,
+                        "--session-hours", f"{left:.3f}",
+                        "--ckpt", "/content/ckpt",
+                        "--quota-hours", "160"], check=False)
 '''
 
 COLAB_RESULT = '''
