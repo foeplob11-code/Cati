@@ -126,30 +126,30 @@ python3 scripts/budget.py v5e1     # t4x2 / p100 / tpuv3 도 가능
 
 → **[시작하기.md](시작하기.md)**
 
-**Colab TPU v5e-1** 에서 학습한다. Kaggle에는 TPU 옵션이 없다 (T4/P100뿐).
-T4로 200M은 111시간(16주)이고 bf16도 없어 fp16 loss scaling을 따로 써야 한다.
-v5e-1은 bf16 네이티브라 지금 코드가 그대로 돈다.
+**Kaggle GPU T4 x2 가 주력, Colab TPU v5e-1 은 보너스.** 두 곳이 Hugging Face Hub의
+같은 체크포인트를 이어받는다. 파라미터가 fp32로 저장되므로 bf16(Colab)과
+fp16(Kaggle) 사이를 오가도 안전하다. 단 동시에 돌리면 서로 덮어쓴다.
 
-| 가속기 | 실효 성능 | bf16 | 200M 소요 |
+| 가속기 | 실효 성능 | bf16 | 확보 시간 | 주당 계산량 |
+|---|---|---|---|---|
+| **Kaggle T4 x2** | 26~32 TFLOPS | ✗ (fp16+스케일링) | **주 30h 보장** | **~3.1e18** |
+| Colab v5e-1 | 40~50 TFLOPS | ✓ | 주 1~2h (불안정) | ~0.3e18 |
+
+Colab이 더 빠르지만 무료 한도가 너무 적고 백그라운드 실행이 안 된다.
+총 계산량은 Kaggle이 10~30배 많다.
+
+| STEP | 모델 | Kaggle T4x2 | 배수 |
 |---|---|---|---|
-| GPU P100 (Kaggle) | 8 TFLOPS | ✗ | 630h |
-| GPU T4 x2 (Kaggle) | 30 TFLOPS | ✗ | 168h |
-| **TPU v5e-1 (Colab)** | **69 TFLOPS** | ✓ | **73h** |
-| TPU v3-8 (TRC) | 147 TFLOPS | ✓ | 34h |
+| 1 | 50M | 약 5h | 42x |
+| 2 | 100M | 약 22h | 41x |
+| 3 | 200M | 약 170h | 75x |
+
+합계 약 197h. 주 30시간이면 6.6주.
 
 ```bash
-python3 scripts/budget.py v5e1     # 쿼터 안에 들어오는지 확인
+python3 scripts/budget.py t4x2      # v5e1 / p100 / tpuv3 도 가능
+python scripts/train.py --tier configs/tier2_200m.json --bench 20   # 설정 실측
 ```
-
-| STEP | 모델 | v5e-1 시간 | 배수 |
-|---|---|---|---|
-| 1 | 50M | 2.3h | 42x |
-| 2 | 100M | 9.5h | 41x |
-| 3 | 200M | 73h | 75x |
-
-합계 85h / 160h (버퍼 47%). 주 20시간이면 4.2주.
-
-토크나이저만 Kaggle에서 만들어 Colab 시간을 아낄 수 있다 (선택): `./tokenizer`
 
 ## 현재 상태
 

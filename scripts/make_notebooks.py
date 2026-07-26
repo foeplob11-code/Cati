@@ -6,13 +6,18 @@
     python3 scripts/make_notebooks.py
 
 만들어지는 것
-    notebooks/cati_colab.ipynb      학습 — Colab TPU v5e-1 (메인)
-    notebooks/cati_tokenizer.ipynb  토크나이저 — Kaggle (선택, Colab 시간 절약용)
+    notebooks/cati_kaggle.ipynb     학습 — Kaggle GPU T4 x2 (주력)
+    notebooks/cati_colab.ipynb      학습 — Colab TPU v5e-1 (보너스)
+    notebooks/cati_tokenizer.ipynb  토크나이저만 — Kaggle CPU (선택)
 
-역할이 갈리는 이유: Kaggle에는 TPU 옵션이 없다 (T4/P100뿐). T4로 200M을 돌리면
-111시간이 걸리고 bf16도 없어 fp16 loss scaling을 따로 써야 한다. 반면 Colab의
-v5e-1은 bf16 네이티브라 지금 코드가 그대로 돈다. 그래서 학습은 Colab에서 한다.
-Kaggle은 TPU가 필요 없는 토크나이저 학습에만 쓴다.
+두 곳을 쓰는 이유. Colab v5e-1은 빠르지만(69 TFLOPS) 무료 한도가 주 1~2시간에
+불과하고 백그라운드 실행도 안 된다. Kaggle T4 x2는 느리지만(26~32 TFLOPS)
+주 30시간이 보장되고 창을 닫아도 돈다 — 총 계산량이 10~30배 많다.
+그래서 Kaggle이 주력, Colab은 한도가 회복될 때 얹는 보너스다.
+
+체크포인트를 HF Hub에 두면 양쪽이 같은 학습을 이어받는다. 파라미터가 fp32로
+저장되므로 bf16(Colab)과 fp16(Kaggle) 사이를 오가도 안전하다.
+단 동시에 돌리면 서로 덮어쓴다.
 """
 from __future__ import annotations
 
@@ -82,7 +87,7 @@ def run_script(name, args):
 # (Colab에서는 '런타임 → 모두 실행'을 쓰는 게 안전하다)
 if "STEP" not in globals():
     STEP, SESSION_HOURS, TOKENIZER_DOCS = 1, 3.5, 400_000
-    STORAGE, HF_USER = "drive", ""
+    STORAGE, HF_USER = "hf", ""
     print("설정 셀을 건너뛰어 기본값을 씁니다 (STEP=1)\\n")
 
 TIERS = ["configs/tier0_50m.json", "configs/tier1_100m.json", "configs/tier2_200m.json"]
@@ -245,12 +250,16 @@ def build_colab() -> dict:
 ### 처음 한 번만
 1. **런타임 → 런타임 유형 변경 → TPU v5e-1**
 2. **런타임 → 모두 실행** ← 셀을 하나씩 누르지 마세요. 순서가 어긋납니다
-3. Drive 연결 권한 허용 (기본 설정) — 체크포인트를 여기 저장합니다
+3. 맨 위 `HF_USER` 에 Hugging Face 사용자명 입력
+4. Colab 좌측 **🔑(보안 비밀)** 에 `HF_TOKEN` 추가
+   (hf.co/settings/tokens → New token → **Write** 권한)
 
-### 체크포인트를 Drive에 두기 싫으면
-맨 위 `STORAGE = "hf"` 로 바꾸고 `HF_USER` 에 Hugging Face 사용자명을 넣으세요.
-토큰은 hf.co/settings/tokens 에서 **Write** 권한으로 만들어 Colab 좌측
-🔑(보안 비밀)에 `HF_TOKEN` 이름으로 넣습니다. 파일 다운로드가 필요 없습니다.
+### 왜 HF Hub인가
+**Kaggle 노트북과 같은 체크포인트를 씁니다.** 어느 쪽에서 이어받든 상관없습니다.
+Google Drive는 Kaggle에서 못 읽어서 안 됩니다.
+Colab 전용으로 쓰려면 `STORAGE = "drive"` 로 바꾸면 됩니다.
+
+⚠️ **두 곳에서 동시에 돌리지 마세요.** 서로 덮어씁니다.
 
 ### 그 다음부터
 **런타임 → 모두 실행** 을 다시 누르면 이어집니다.
@@ -276,8 +285,8 @@ def build_colab() -> dict:
         code('''
 STEP = 1               # 1=50M   2=100M   3=200M
 
-STORAGE = "drive"      # 체크포인트를 어디에 둘까: "drive" 또는 "hf"
-HF_USER = ""           # STORAGE="hf" 일 때만. Hugging Face 사용자명
+STORAGE = "hf"         # "hf" = Kaggle과 체크포인트 공유 (권장) · "drive" = Colab 전용
+HF_USER = ""           # ← Hugging Face 사용자명
 
 SESSION_HOURS = 3.5    # 무료 Colab 세션은 보통 3~4시간. 짧게 잡아 자주 저장한다
 TOKENIZER_DOCS = 400_000
@@ -384,6 +393,195 @@ def verify(nb: dict, name: str) -> list[str]:
     return problems
 
 
+
+# ===========================================================================
+# Kaggle — 학습 (GPU T4 x2, 주력)
+# ===========================================================================
+KAGGLE_TRAIN = f'''
+# ══ 준비 ══
+import os, shutil, subprocess, sys, time
+from pathlib import Path
+
+NB_START = time.monotonic()
+
+if "STEP" not in globals():
+    STEP, SESSION_HOURS, TOKENIZER_DOCS, HF_USER = 1, 11.0, 400_000, ""
+
+TIERS = ["configs/tier0_50m.json", "configs/tier1_100m.json", "configs/tier2_200m.json"]
+if not 1 <= STEP <= 3:
+    raise SystemExit(f"STEP은 1, 2, 3 중 하나여야 합니다 (지금 {{STEP}})")
+TIER = TIERS[STEP - 1]
+
+
+def run_script(name, args):
+    """스크립트를 이 프로세스 안에서 실행한다 (자식 프로세스는 GPU/로그 문제가 생긴다)."""
+    import importlib
+    sys.path.insert(0, str(Path.cwd() / "scripts"))
+    mod = importlib.import_module(name)
+    importlib.reload(mod)
+    return mod.main(args)
+
+
+# ── 코드 ────────────────────────────────────────────────────────
+CATI = Path("/kaggle/working/Cati")
+if CATI.exists():
+    subprocess.run(["git", "-C", str(CATI), "pull", "-q"], check=False)
+else:
+    subprocess.run(["git", "clone", "--depth", "1",
+                    "{GITHUB_URL}", str(CATI)], check=True)
+os.chdir(CATI)
+sys.path.insert(0, str(CATI))
+
+# ── 패키지 ──────────────────────────────────────────────────────
+# Kaggle 이미지에는 JAX가 CPU 버전으로 깔려 있다. CUDA 버전으로 갈아끼운다.
+print("패키지 설치 중 (3~5분)...", flush=True)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                "jax[cuda12]", "flax", "optax", "orbax-checkpoint",
+                "tokenizers>=0.22", "datasets>=3.0", "huggingface_hub>=0.27"],
+               check=False)
+
+import jax
+devs = jax.devices()
+print(f"디바이스   {{len(devs)}}개 · {{devs[0].device_kind}} · {{devs[0].platform}}")
+if devs[0].platform != "gpu":
+    print("           ⚠️ GPU가 아니다 → Settings → Accelerator → GPU T4 x2")
+
+# ── HF Hub: Colab과 공용 저장소 ─────────────────────────────────
+# Kaggle과 Colab이 같은 체크포인트를 주고받으려면 양쪽에서 접근 가능한 곳이어야 한다.
+# Google Drive는 Kaggle에서 못 읽으므로 HF Hub를 쓴다.
+from kaggle_secrets import UserSecretsClient
+try:
+    os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
+except Exception as e:
+    raise SystemExit(
+        f"HF_TOKEN을 못 찾았습니다 ({{type(e).__name__}}).\\n"
+        "  1. huggingface.co/settings/tokens → New token → Write 권한\\n"
+        "  2. 이 노트북 → Add-ons → Secrets → 이름 HF_TOKEN, 값 붙여넣기")
+if not HF_USER:
+    raise SystemExit("맨 위 HF_USER 에 Hugging Face 사용자명을 넣으세요.")
+os.environ["CATI_HF_REPO"] = f"{{HF_USER}}/cati-ckpt"
+print(f"저장소     {{os.environ['CATI_HF_REPO']}} (비공개)")
+
+# ── 토크나이저 ──────────────────────────────────────────────────
+TOK = Path("artifacts/tokenizer/tokenizer.json")
+TOK.parent.mkdir(parents=True, exist_ok=True)
+if not TOK.exists():
+    from huggingface_hub import hf_hub_download
+    try:
+        got = hf_hub_download(f"{{HF_USER}}/cati-ckpt", "tokenizer.json",
+                              repo_type="model")
+        shutil.copy(got, TOK)
+        print("토크나이저 HF에서 재사용")
+    except Exception:
+        print("토크나이저 없음 → 새로 학습 (20~40분, 처음 한 번만)\\n")
+        run_script("train_tokenizer", ["train", "--docs", str(TOKENIZER_DOCS)])
+        from huggingface_hub import HfApi
+        HfApi().create_repo(f"{{HF_USER}}/cati-ckpt", private=True,
+                            exist_ok=True, repo_type="model")
+        HfApi().upload_file(path_or_fileobj=str(TOK), path_in_repo="tokenizer.json",
+                            repo_id=f"{{HF_USER}}/cati-ckpt", repo_type="model")
+        print("토크나이저를 HF에 올렸습니다 (Colab에서도 같은 걸 씁니다)")
+else:
+    print("토크나이저 저장소 커밋본 사용")
+
+from tokenizers import Tokenizer
+_t = Tokenizer.from_file(str(TOK))
+_p = "고양이는 창가에 앉아 오래 밖을 바라보았다."
+_r = len(_p) / len(_t.encode(_p).ids)
+print(f"           vocab {{_t.get_vocab_size():,}} · 한국어 {{_r:.2f}} 글자/토큰")
+print("\\n준비 완료")
+'''
+
+KAGGLE_TRAIN_RUN = '''
+# ══ 학습 ══ Save & Run All 로 돌리면 창을 닫아도 12시간을 다 씁니다.
+#
+#  loss   10.8 에서 시작해 내려가야 한다
+#  scale  fp16 손실 스케일링 배율. 자주 반토막나면 학습률이 높은 것
+#  버림   넘쳐서 버린 스텝 수. 전체의 몇 % 를 넘으면 문제
+import time
+
+used = (time.monotonic() - NB_START) / 3600
+left = SESSION_HOURS - used
+print(f"준비에 {used*60:.0f}분 사용 · 학습에 {left:.2f}시간 배정\\n")
+if left < 0.2:
+    print("남은 시간이 너무 적습니다. 다시 실행하세요.")
+else:
+    run_script("train", ["--tier", TIER,
+                         "--session-hours", f"{left:.3f}",
+                         "--ckpt", "/kaggle/working/ckpt",
+                         "--quota-hours", "240"])
+'''
+
+KAGGLE_RESULT = '''
+# ══ 결과 ══
+import json
+from pathlib import Path
+
+steps = sorted(Path("/kaggle/working/ckpt").glob("step_*"))
+if not steps:
+    print("체크포인트가 없다 — 위 학습 셀 출력을 확인할 것")
+else:
+    m = json.loads((steps[-1] / "meta.json").read_text())
+    pct = m["tokens"] / m["target_tokens"]
+    print(f"{m['step']:,}스텝   {m['tokens']/1e9:.2f}B / "
+          f"{m['target_tokens']/1e9:.0f}B 토큰   {pct:.1%}")
+    print(f"누적 {m.get('device_hours_used', 0):.1f}시간 · 세션 #{m.get('session_index', 1)}")
+    print()
+    if pct < 1.0:
+        print("아직 진행 중  →  Save & Run All 을 다시 누르세요 (이어집니다)")
+        print("            또는 Colab 노트북에서 이어받아도 됩니다")
+    elif STEP < 3:
+        print(f"이 티어 완료  →  맨 위 STEP 을 {STEP + 1} 로 바꾸고 다시 실행")
+    else:
+        print("사전학습 완료  →  다음은 도서 어닐링 (문체 학습)")
+'''
+
+
+def build_kaggle_train() -> dict:
+    return notebook([
+        md('''
+# Cati 학습 — Kaggle GPU T4 x2 (주력)
+
+주 30시간이 **보장**되고 `Save & Run All` 로 돌리면 창을 닫아도 계속 돕니다.
+무료 Colab보다 느리지만 총 계산량은 10~30배 많습니다.
+
+### 처음 한 번만
+1. **Settings → Accelerator → GPU T4 x2** · Internet **On**
+2. **Add-ons → Secrets** 에 `HF_TOKEN` 추가
+   (huggingface.co/settings/tokens → New token → **Write** 권한)
+3. 아래 `HF_USER` 에 Hugging Face 사용자명 입력
+4. **Save Version → Save & Run All** → 창 닫기
+
+### 그 다음부터
+**Save & Run All** 만 다시 누르면 이어집니다.
+
+체크포인트가 HF Hub에 올라가므로 **Colab에서 이어받아도 됩니다.**
+단 동시에 돌리지는 마세요 — 서로 덮어씁니다.
+
+### T4는 bf16이 없습니다
+fp16 + 동적 손실 스케일링으로 돕니다. 로그의 `scale` 과 `버림` 을 보세요.
+버린 스텝이 전체의 20%를 넘으면 자동으로 멈추고 알려줍니다.
+
+### 순서
+| STEP | 모델 | T4x2 시간 |
+|---|---|---|
+| 1 | 50M | 약 5h |
+| 2 | 100M | 약 22h |
+| 3 | **200M** | **약 170h** |
+'''),
+        code('''
+STEP = 1               # 1=50M   2=100M   3=200M
+HF_USER = ""           # ← Hugging Face 사용자명
+
+SESSION_HOURS = 11.0   # Kaggle GPU 세션 한계 12시간, 여유 1시간
+TOKENIZER_DOCS = 400_000
+'''),
+        code(KAGGLE_TRAIN),
+        code(KAGGLE_TRAIN_RUN),
+        code(KAGGLE_RESULT),
+    ])
+
+
 def main():
     OUT.mkdir(exist_ok=True)
     for old in ("01_tokenizer.ipynb", "02_train.ipynb", "cati_train.ipynb"):
@@ -393,7 +591,8 @@ def main():
             print(f"삭제: notebooks/{old}")
 
     built, problems = [], []
-    for name, nb in [("cati_colab", build_colab()),
+    for name, nb in [("cati_kaggle", build_kaggle_train()),
+                     ("cati_colab", build_colab()),
                      ("cati_tokenizer", build_tokenizer_nb())]:
         problems += verify(nb, name)
         built.append((name, nb))

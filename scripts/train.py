@@ -44,8 +44,32 @@ DEVICE_PEAK_TFLOPS = {
     "TPU v4": 137.5,        # 칩 275, 코어 2개
     "TPU v3": 52.5,         # v3-8 전체 420 / 8코어
     "TPU v2": 22.5,         # v2-8 전체 180 / 8코어
+    "Tesla T4": 65.0,       # fp16 텐서코어
+    "Tesla P100": 21.2,     # fp16, 텐서코어 없음
+    "A100": 312.0,
+    "L4": 121.0,
 }
 DEFAULT_PEAK_TFLOPS = 197.0
+
+
+DTYPES = {"bf16": jnp.bfloat16, "fp16": jnp.float16, "fp32": jnp.float32}
+# bf16 하드웨어가 있는 것들. 없으면 fp16 + 손실 스케일링으로 간다.
+BF16_DEVICES = ("tpu", "a100", "h100", "l4", "rtx 30", "rtx 40", "ampere", "ada")
+
+
+def pick_precision(devices, requested: str) -> tuple[str, str]:
+    """(정밀도, 근거). requested가 'auto'면 디바이스를 보고 고른다."""
+    kind = devices[0].device_kind.lower()
+    plat = devices[0].platform
+    has_bf16 = any(k in kind for k in BF16_DEVICES) or plat == "tpu"
+    if requested != "auto":
+        if requested == "bf16" and not has_bf16:
+            return "fp16", (f"bf16을 요청했지만 {devices[0].device_kind}에는 "
+                            f"bf16 하드웨어가 없다 → fp16으로 전환")
+        return requested, f"설정값 {requested}"
+    if has_bf16:
+        return "bf16", f"{devices[0].device_kind}는 bf16 지원"
+    return "fp16", f"{devices[0].device_kind}는 bf16 미지원 → fp16 + 손실 스케일링"
 
 
 def device_peak_flops(devices) -> tuple[float, str]:
@@ -204,9 +228,11 @@ def main(argv=None):
           f"  · 누적 {accum}회")
     remat_policy = raw.get("remat_policy", "full")
     print(f"remat           {'끔(스모크)' if args.smoke else f'켬 · 정책 {remat_policy}'}")
+    precision, prec_why = pick_precision(devices, raw.get("precision", "auto"))
+    print(f"정밀도          {precision}  ({prec_why})")
 
     # ---- 모델/옵티마이저 ---------------------------------------------
-    model = CatiLM(cfg, dtype=jnp.bfloat16, remat=not args.smoke,
+    model = CatiLM(cfg, dtype=DTYPES[precision], remat=not args.smoke,
                    remat_policy=remat_policy)
     opt, schedule, warmup = make_optimizer(cfg, raw, total_steps)
     print(f"학습률          {raw['lr']:.1e} · 웜업 {warmup:,} 스텝")
@@ -246,24 +272,48 @@ def main(argv=None):
                                 (h.transpose(1, 0, 2, 3), y.transpose(1, 0, 2)))
         return total / (b * t)
 
-    @partial(jax.jit, donate_argnums=(0, 1), out_shardings=(replicate, replicate,
-                                                            replicate, replicate))
-    def train_step(params, opt_state, micro):
+    # fp16은 지수 범위가 좁아(최소 정상값 6e-5) 작은 기울기가 그냥 0이 된다.
+    # 손실에 큰 수를 곱해 기울기를 표현 가능한 범위로 올리고, 갱신 직전에 되돌린다.
+    # 넘치면(inf/nan) 그 스텝을 버리고 배율을 절반으로, 오래 멀쩡하면 두 배로 키운다.
+    use_scaling = precision == "fp16"
+    SCALE_GROWTH_STEPS = 500
+    SCALE_MAX = jnp.float32(2.0 ** 24)
+
+    @partial(jax.jit, donate_argnums=(0, 1))
+    def train_step(params, opt_state, micro, scale, good):
         zeros = jax.tree_util.tree_map(jnp.zeros_like, params)
 
         def accumulate(carry, mb):
             loss_sum, grad_sum = carry
-            loss, grads = jax.value_and_grad(compute_loss)(params, mb)
+            loss, grads = jax.value_and_grad(
+                lambda p, b: compute_loss(p, b) * scale)(params, mb)
             return (loss_sum + loss,
                     jax.tree_util.tree_map(jnp.add, grad_sum, grads)), None
 
-        (loss, grads), _ = jax.lax.scan(accumulate, (jnp.float32(0.0), zeros), micro)
+        (scaled_loss, grads), _ = jax.lax.scan(
+            accumulate, (jnp.float32(0.0), zeros), micro)
         n = micro.shape[0]
-        loss = loss / n
-        grads = jax.tree_util.tree_map(lambda g: g / n, grads)
+        loss = scaled_loss / (n * scale)
+        grads = jax.tree_util.tree_map(lambda g: g / (n * scale), grads)
+
+        finite = jnp.all(jnp.stack([jnp.all(jnp.isfinite(g))
+                                    for g in jax.tree_util.tree_leaves(grads)]))
         gnorm = optax.global_norm(grads)
-        updates, opt_state = opt.update(grads, opt_state, params)
-        return optax.apply_updates(params, updates), opt_state, loss, gnorm
+
+        updates, new_opt = opt.update(grads, opt_state, params)
+        new_params = optax.apply_updates(params, updates)
+        # 넘친 스텝은 통째로 버린다 (파라미터·옵티마이저 모두 되돌림)
+        keep = lambda new, old: jnp.where(finite, new, old)
+        params = jax.tree_util.tree_map(keep, new_params, params)
+        opt_state = jax.tree_util.tree_map(keep, new_opt, opt_state)
+
+        if use_scaling:
+            grow = finite & (good + 1 >= SCALE_GROWTH_STEPS)
+            scale = jnp.where(finite,
+                              jnp.where(grow, jnp.minimum(scale * 2, SCALE_MAX), scale),
+                              jnp.maximum(scale / 2, jnp.float32(1.0)))
+            good = jnp.where(finite, jnp.where(grow, 0, good + 1), 0)
+        return params, opt_state, loss, gnorm, scale, good, finite
 
     def init_fn():
         key = jax.random.PRNGKey(args.seed)
@@ -310,6 +360,10 @@ def main(argv=None):
     opt_state = jax.device_put(state["opt_state"], replicate)
     print("=" * 66)
 
+    scale = jnp.float32(2.0 ** 15) if precision == "fp16" else jnp.float32(1.0)
+    good = jnp.int32(0)
+    skipped = 0
+
     started = time.monotonic()
     batch_iter = prefetch(packer.batches(), depth=4)
     pending: list[np.ndarray] = []
@@ -329,22 +383,32 @@ def main(argv=None):
         pending = []
         micro = jax.device_put(micro, shard_data)
 
-        params, opt_state, loss, gnorm = train_step(params, opt_state, micro)
+        params, opt_state, loss, gnorm, scale, good, finite = train_step(
+            params, opt_state, micro, scale, good)
         loss = float(loss)
+        if not bool(finite):
+            skipped += 1
         step += 1
         tokens += tokens_per_step
         dt = time.monotonic() - t0
 
-        if not np.isfinite(loss):
+        if not np.isfinite(loss) and precision != "fp16":
             print(f"\n손실이 발산했다 (step {step}, loss {loss}). 중단한다.")
             print("직전 체크포인트로 돌아가 학습률을 낮출 것.")
+            break
+        if precision == "fp16" and skipped > 0 and skipped > step * 0.2:
+            print(f"\n버린 스텝이 {skipped}/{step} 로 너무 많다. "
+                  "학습률을 낮추거나 fp32로 전환할 것.")
             break
 
         if step % run.log_every == 0 or step <= 3:
             r = run.budget.report(tokens, run.device_hours)
+            extra = (f"  scale {float(scale):.0e} 버림 {skipped}"
+                     if precision == "fp16" else "")
             print(f"step {step:>6}/{total_steps}  loss {loss:6.3f}  "
                   f"|g| {float(gnorm):6.3f}  lr {float(schedule(step)):.2e}  "
-                  f"{dt:5.2f}s  {r['tokens_per_sec']:>8,.0f} tok/s  MFU {r['mfu']:4.1%}")
+                  f"{dt:5.2f}s  {r['tokens_per_sec']:>8,.0f} tok/s  "
+                  f"MFU {r['mfu']:4.1%}{extra}")
 
         # packer 상태는 실제로 학습에 쓴 배치까지만 반영한다 (프리페치 큐 제외)
         packer_snapshot = _Snapshot(last_state, packer)

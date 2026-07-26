@@ -5,7 +5,6 @@
   "_device": "TPU v3-8 (8코어, 코어당 HBM 16GB, bf16). 실효 147 TFLOPS = Colab v5e-1의 2.1배.",
   "_budget": "20B 토큰 = v3-8 에서 91시간. TRC는 30일 무제한이라 하루 3시간씩만 써도 끝난다.",
   "_risk": "TRC가 v2-8(실효 63 TFLOPS)을 주면 v5e-1보다 오히려 느리다. 그 경우 200M으로 되돌린다.",
-
   "vocab_size": 49152,
   "d_model": 1024,
   "n_layers": 28,
@@ -14,7 +13,6 @@
   "head_dim": 64,
   "d_ff": 3200,
   "_shape_note": "31층/d_ff2816 과 파라미터 수가 같은데 28층 쪽이 KV 캐시가 작다 (28KB vs 31KB per token). 온디바이스 추론 메모리와 커널 오버헤드에서 유리하다.",
-
   "tie_embeddings": true,
   "norm": "rmsnorm",
   "activation": "swiglu",
@@ -22,13 +20,11 @@
   "rope_theta": 10000.0,
   "seq_len": 2048,
   "_seq_len_note": "어닐링에서 8192로 확장 (rope_theta를 500000으로 올림)",
-
   "train_tokens": 20000000000,
   "anneal_tokens": 3000000000,
   "_tokens_note": "50배 과학습. 200M x 15B(75배)보다 배수는 낮지만, 둘 다 Chinchilla 최적점(20배)을 훨씬 넘긴 구간이라 여기서는 용량 차이가 이긴다.",
-
   "optimizer": "adamw",
-  "lr": 5.0e-4,
+  "lr": 0.0005,
   "lr_schedule": "warmup_cosine",
   "warmup_ratio": 0.01,
   "min_lr_ratio": 0.1,
@@ -36,14 +32,12 @@
   "grad_clip": 1.0,
   "beta1": 0.9,
   "beta2": 0.95,
-
   "global_batch_tokens": 524288,
   "micro_batch_per_device": 16,
   "_batch_note": "256시퀀스 = 디바이스당 16 x 8코어 x 누적 2회. 코어당 파라미터+Adam 4.8GB, 활성값(remat 켬) 약 4GB → 16GB 중 9GB.",
-
-  "precision": "bf16",
+  "precision": "auto",
   "remat_policy": "full",
-
   "save_every_steps": 200,
-  "log_every_steps": 10
+  "log_every_steps": 10,
+  "_precision_note": "auto = TPU/A100 이면 bf16, T4/P100 이면 fp16 + 동적 손실 스케일링. fp16은 지수 범위가 좁아 스케일링 없이는 작은 기울기가 0으로 죽는다."
 }
