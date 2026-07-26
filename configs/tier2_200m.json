@@ -32,12 +32,14 @@
   "beta1": 0.9,
   "beta2": 0.95,
   "global_batch_tokens": 262144,
-  "micro_batch_per_device": 32,
-  "_batch_note": "128시퀀스 = 디바이스당 32 x 1대 x 누적 4회. v5e-1 HBM 16GB 중 파라미터+Adam 2.4GB, 활성값(remat 켬) 약 5.9GB.",
+  "micro_batch_per_device": 16,
+  "_batch_note": "128시퀀스 = 16 x 1대 x 누적 8회. 메모리 한도(약 12GB)와 '시퀀스 수를 나누어떨어뜨릴 것' 두 조건을 만족하는 최대값. --bench 로 실측 후 조정한다.",
   "precision": "bf16",
   "_precision_note": "v5e-1은 bf16 네이티브. fp16 loss scaling이 필요 없다.",
   "save_every_steps": 200,
   "log_every_steps": 10,
   "remat_policy": "full",
-  "_gqa_note": "n_kv_heads는 n_heads(14)의 약수여야 한다 — 4는 배수가 아니라 설정 검증에 걸렸다. 2로 두면 GQA 비율 7:1로 KV 캐시가 9KB/토큰까지 줄어 온디바이스에 유리하다."
+  "_gqa_note": "n_kv_heads는 n_heads(14)의 약수여야 한다 — 4는 배수가 아니라 설정 검증에 걸렸다. 2로 두면 GQA 비율 7:1로 KV 캐시가 9KB/토큰까지 줄어 온디바이스에 유리하다.",
+  "loss_chunk_tokens": 256,
+  "_loss_chunk_note": "어휘 투영과 교차엔트로피를 256토큰 조각으로 나눠 계산한다. 한 번에 하면 로짓이 (B, 2048, 49152) fp32 라서 배치 32에 12.9GB다."
 }

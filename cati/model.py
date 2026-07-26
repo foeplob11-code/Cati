@@ -166,7 +166,13 @@ class CatiLM(nn.Module):
     remat_policy: str = "full"
 
     @nn.compact
-    def __call__(self, tokens):
+    def __call__(self, tokens, return_hidden: bool = False):
+        """return_hidden=True면 어휘 투영 전의 은닉 상태 (B,T,d) 를 준다.
+
+        로짓 (B,T,V) 는 어휘가 49,152라 fp32로 만들면 배치 32 · 길이 2048에서
+        12.9GB다. v5e-1의 HBM 16GB를 혼자 다 먹는다. 손실을 조각내어 계산하려면
+        은닉 상태만 받아서 어휘 투영을 나눠 해야 한다.
+        """
         c = self.cfg
         b, t = tokens.shape
 
@@ -191,6 +197,8 @@ class CatiLM(nn.Module):
         for i in range(c.n_layers):
             x = block_cls(c, self.dtype, name=f"layers_{i}")(x, cos, sin, mask)
         x = RMSNorm(c.norm_eps, name="norm")(x)
+        if return_hidden:
+            return x
 
         if c.tie_embeddings:
             logits = jnp.einsum("btd,vd->btv", x, embed.astype(self.dtype))
@@ -200,6 +208,14 @@ class CatiLM(nn.Module):
                               kernel_init=nn.initializers.normal(0.02),
                               name="lm_head")(x)
         return logits.astype(jnp.float32)      # 손실 계산은 fp32에서
+
+    def head(self, params, hidden):
+        """은닉 상태 → 로짓. 손실을 조각내어 계산할 때 쓴다."""
+        if self.cfg.tie_embeddings:
+            w = params["embed_tokens"]
+        else:
+            w = params["lm_head"]["kernel"].T
+        return jnp.einsum("btd,vd->btv", hidden, w.astype(self.dtype))
 
 
 # ---------------------------------------------------------------------------

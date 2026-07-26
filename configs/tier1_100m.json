@@ -26,6 +26,8 @@
   "beta2": 0.95,
   "global_batch_tokens": 524288,
   "micro_batch_per_device": 32,
-  "_batch_note": "256시퀀스 = 32 x 1대 x 누적 8회. v5e-1 16GB 기준 약 7.8GB.",
-  "remat_policy": "full"
+  "_batch_note": "256시퀀스 = 32 x 1대 x 누적 8회. 메모리 한도(약 12GB)와 '시퀀스 수를 나누어떨어뜨릴 것' 두 조건을 만족하는 최대값. --bench 로 실측 후 조정한다.",
+  "remat_policy": "full",
+  "loss_chunk_tokens": 256,
+  "_loss_chunk_note": "어휘 투영과 교차엔트로피를 256토큰 조각으로 나눠 계산한다. 한 번에 하면 로짓이 (B, 2048, 49152) fp32 라서 배치 32에 12.9GB다."
 }

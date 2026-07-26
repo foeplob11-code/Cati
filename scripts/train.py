@@ -178,8 +178,12 @@ def main(argv=None):
     micro_total = micro_per_dev * n_dev
     seqs_per_step = raw["global_batch_tokens"] // cfg.seq_len
     if seqs_per_step % micro_total:
-        sys.exit(f"global_batch_tokens/seq_len({seqs_per_step})이 "
-                 f"micro_batch_per_device*devices({micro_total})의 배수가 아니다")
+        ok = [b for b in range(1, seqs_per_step + 1)
+              if seqs_per_step % b == 0 and b % n_dev == 0 or (n_dev == 1 and seqs_per_step % b == 0)]
+        sys.exit(f"micro_batch_per_device x 디바이스({micro_total})가 "
+                 f"시퀀스 수({seqs_per_step})를 나누어떨어뜨리지 못한다.\n"
+                 f"  쓸 수 있는 micro_batch_per_device: "
+                 f"{sorted({b // n_dev for b in ok if b % n_dev == 0})}")
     accum = seqs_per_step // micro_total
 
     target_tokens = raw["train_tokens"] if args.phase == "pretrain" else raw["anneal_tokens"]
@@ -211,10 +215,36 @@ def main(argv=None):
     shard_data = NamedSharding(mesh, P(None, "data", None))   # (accum, batch, T+1)
     replicate = NamedSharding(mesh, P())
 
+    loss_chunk = raw.get("loss_chunk_tokens", 256)
+
     def compute_loss(params, batch):
+        """어휘 투영과 교차엔트로피를 시퀀스 조각으로 나눠 계산한다.
+
+        한 번에 하면 로짓이 (B, T, 49152) fp32 = 배치 32·길이 2048 기준 12.9GB다.
+        v5e-1의 HBM 16GB를 혼자 다 먹어서 OOM이 난다. 조각내면 피크가
+        (B, chunk, V) 로 줄고 메모리 트래픽도 함께 줄어 속도에도 유리하다.
+        """
         inputs, targets = batch[:, :-1], batch[:, 1:]
-        logits = model.apply({"params": params}, inputs)
-        return optax.softmax_cross_entropy_with_integer_labels(logits, targets).mean()
+        hidden = model.apply({"params": params}, inputs, return_hidden=True)
+        b, t, _ = hidden.shape
+        n = max(1, min(loss_chunk, t))
+        if t % n:                      # 나누어떨어지지 않으면 통째로 (스모크 등)
+            logits = model.head(params, hidden).astype(jnp.float32)
+            return optax.softmax_cross_entropy_with_integer_labels(logits, targets).mean()
+
+        h = hidden.reshape(b, t // n, n, hidden.shape[-1])
+        y = targets.reshape(b, t // n, n)
+
+        def one(carry, xs):
+            hc, yc = xs
+            logits = model.head(params, hc).astype(jnp.float32)
+            return carry + optax.softmax_cross_entropy_with_integer_labels(
+                logits, yc).sum(), None
+
+        # (chunks, B, n, d) 로 옮겨 scan 이 조각 단위로 돌게 한다
+        total, _ = jax.lax.scan(one, jnp.float32(0.0),
+                                (h.transpose(1, 0, 2, 3), y.transpose(1, 0, 2)))
+        return total / (b * t)
 
     @partial(jax.jit, donate_argnums=(0, 1), out_shardings=(replicate, replicate,
                                                             replicate, replicate))
