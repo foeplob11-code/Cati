@@ -108,6 +108,7 @@ if not IS_TPU:
 # 무료 Colab은 예고 없이 끊기고 /content 는 사라진다.
 # 체크포인트를 세션 밖에 두지 않으면 73시간짜리 학습을 끝낼 수 없다.
 TOK_HOME = None          # 토크나이저를 둘 곳 (Drive면 폴더, HF면 None)
+READY = True
 
 if STORAGE == "drive":
     from google.colab import drive
@@ -152,6 +153,8 @@ subprocess.run([sys.executable, "-m", "pip", "install", "-q",
 
 # ── 토크나이저: 저장소에 있으면 재사용, 없으면 만들어 보관한다 ──
 # 전 티어가 같은 토크나이저를 공유해야 사다리 실험을 비교할 수 있다.
+if not READY:
+    raise SystemExit
 TOK = Path("artifacts/tokenizer/tokenizer.json")
 TOK.parent.mkdir(parents=True, exist_ok=True)
 SAVED = (TOK_HOME / "tokenizer.json") if TOK_HOME else None
@@ -193,7 +196,9 @@ COLAB_TRAIN = '''
 #  MFU   35% 근처면 계획대로. 25% 미만이면 알려주세요
 import os, subprocess, sys, time
 
-if not IS_TPU:
+if not READY:
+    print("준비가 안 끝났습니다. 위 셀의 안내를 따른 뒤 다시 실행하세요.")
+elif not IS_TPU:
     print("TPU가 아니라 학습을 건너뜁니다.")
     print("런타임 → 런타임 유형 변경 → TPU v5e-1 로 바꾸고 다시 실행하세요.")
 else:
@@ -449,23 +454,36 @@ if devs[0].platform != "gpu":
 # ── HF Hub: Colab과 공용 저장소 ─────────────────────────────────
 # Kaggle과 Colab이 같은 체크포인트를 주고받으려면 양쪽에서 접근 가능한 곳이어야 한다.
 # Google Drive는 Kaggle에서 못 읽으므로 HF Hub를 쓴다.
+READY = True
 from kaggle_secrets import UserSecretsClient
 try:
     os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN")
 except Exception as e:
-    raise SystemExit(
-        f"HF_TOKEN을 못 찾았습니다 ({{type(e).__name__}}).\\n"
-        "  1. huggingface.co/settings/tokens → New token → Write 권한\\n"
-        "  2. 이 노트북 → Add-ons → Secrets → 이름 HF_TOKEN, 값 붙여넣기")
-if not HF_USER:
-    raise SystemExit("맨 위 HF_USER 에 Hugging Face 사용자명을 넣으세요.")
-os.environ["CATI_HF_REPO"] = f"{{HF_USER}}/cati-ckpt"
-print(f"저장소     {{os.environ['CATI_HF_REPO']}} (비공개)")
+    READY = False
+    print("\\n" + "=" * 60)
+    print("  HF_TOKEN 을 못 찾았습니다")
+    print("=" * 60)
+    print("  1. huggingface.co/settings/tokens 에서 Write 토큰 만들기")
+    print("  2. 이 노트북 상단 [Add-ons] → [Secrets]")
+    print("  3. Label 을 정확히  HF_TOKEN  으로 (대문자, 밑줄)")
+    print("  4. ⚠️ 목록에서 그 Secret 의 [Attached] 토글을 켤 것")
+    print("     — 만들기만 하고 연결을 안 하면 이 오류가 납니다")
+    print("  5. 그 다음 Save & Run All 을 다시 누르세요")
+    print("=" * 60)
+if READY and not HF_USER:
+    READY = False
+    print("\\n맨 위 셀의 HF_USER 에 Hugging Face 사용자명을 넣으세요.")
+    print("(huggingface.co/settings/profile 의 Username)")
+if READY:
+    os.environ["CATI_HF_REPO"] = f"{{HF_USER}}/cati-ckpt"
+    print(f"저장소     {{os.environ['CATI_HF_REPO']}} (비공개)")
 
 # ── 토크나이저 ──────────────────────────────────────────────────
 TOK = Path("artifacts/tokenizer/tokenizer.json")
 TOK.parent.mkdir(parents=True, exist_ok=True)
-if not TOK.exists():
+if not READY:
+    print("\\n위 문제를 해결한 뒤 다시 실행하세요. 여기서 멈춥니다.")
+elif not TOK.exists():
     from huggingface_hub import hf_hub_download
     try:
         got = hf_hub_download(f"{{HF_USER}}/cati-ckpt", "tokenizer.json",
@@ -484,12 +502,13 @@ if not TOK.exists():
 else:
     print("토크나이저 저장소 커밋본 사용")
 
-from tokenizers import Tokenizer
-_t = Tokenizer.from_file(str(TOK))
-_p = "고양이는 창가에 앉아 오래 밖을 바라보았다."
-_r = len(_p) / len(_t.encode(_p).ids)
-print(f"           vocab {{_t.get_vocab_size():,}} · 한국어 {{_r:.2f}} 글자/토큰")
-print("\\n준비 완료")
+if READY:
+    from tokenizers import Tokenizer
+    _t = Tokenizer.from_file(str(TOK))
+    _p = "고양이는 창가에 앉아 오래 밖을 바라보았다."
+    _r = len(_p) / len(_t.encode(_p).ids)
+    print(f"           vocab {{_t.get_vocab_size():,}} · 한국어 {{_r:.2f}} 글자/토큰")
+    print("\\n준비 완료")
 '''
 
 KAGGLE_TRAIN_RUN = '''
@@ -500,6 +519,9 @@ KAGGLE_TRAIN_RUN = '''
 #  버림   넘쳐서 버린 스텝 수. 전체의 몇 % 를 넘으면 문제
 import time
 
+if not READY:
+    print("준비가 안 끝났습니다. 위 셀의 안내를 따른 뒤 다시 실행하세요.")
+    raise SystemExit
 used = (time.monotonic() - NB_START) / 3600
 left = SESSION_HOURS - used
 print(f"준비에 {used*60:.0f}분 사용 · 학습에 {left:.2f}시간 배정\\n")
