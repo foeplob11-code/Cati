@@ -2,7 +2,7 @@
 
 오프라인으로 구동하는 에이전틱 AI 비서. 모델은 **처음부터 학습**한다.
 
-- **모델**: cati-200m (201M dense) — Colab 무료 TPU v5e-1 로 15B 토큰 사전학습
+- **모델**: cati-200m (201M dense) — 무료 Kaggle T4 로 15B 토큰 사전학습
 - **배포**: MacBook M1, 2.5GB 단일 앱, 네트워크 불필요
 - **성격**: MCP 도구를 호출하는 에이전트 · 글쓰기 특화
 - **마스코트**: 하얀 고양이
@@ -19,16 +19,16 @@ configs/          # 티어 설정 (사다리) + 토크나이저 설정 — 전�
   tier0_50m.json    파이프라인 검증용
   tier1_100m.json   제품의 의도 분류 라우터
   tier2_200m.json   최종 출시 모델
-  alt/350m_tpu.json TPU 확보 시 복귀용
+  alt/              TPU를 크게 확보했을 때 쓸 350M/400M 설정
   data.json         데이터 소스 — 여기만 보면 된다
 tokenizer         # ← Kaggle 토크나이저 실행 (선택)
 cati/             # 학습 인프라
   model.py          Llama 계열 디코더 (Flax) · HF 가중치 호환
-  session.py        9시간 세션 가드 (정상종료/업로드 데드라인)
+  session.py        세션 가드 (정상종료/업로드 데드라인, 짧은 세션도 대응)
   stream.py         재개 가능한 데이터 스트림 ← 가장 틀리기 쉬운 부분
   packing.py        문서 → 고정 길이 배치 (남은 토큰 버퍼도 재개 대상)
   checkpoint.py     원자적 저장 + 배열 백엔드 (Orbax / numpy)
-  store.py          Kaggle Dataset 영속화
+  store.py          체크포인트 영속화 (HF Hub / Kaggle Dataset / 로컬)
   telemetry.py      JSONL 로그 + MFU/쿼터 추정
   runner.py         위 전부를 묶은 세션 오케스트레이터
 scripts/
@@ -40,16 +40,17 @@ scripts/
   test_resume.py      재개 정확성 검증 (35 검사)
   test_model.py       모델 검증 (24 검사)
 notebooks/
-  cati_colab.ipynb      학습 (Colab TPU v5e-1)
-  cati_tokenizer.ipynb  토크나이저 (Kaggle, 선택)
+  cati_kaggle.ipynb     학습 — Kaggle T4 x2 (주력)
+  cati_colab.ipynb      학습 — Colab v5e-1 (보너스)
+  cati_tokenizer.ipynb  토크나이저만 (선택)
 artifacts/        # 학습 산출물 (git 제외)
 app/              # Tauri 앱 (제품 트랙, 미착수)
 ```
 
 ## 체크포인트/재개
 
-무료 Colab은 예고 없이 끊기고 `/content` 는 사라진다. 73시간짜리 200M 런은
-수십 번 끊긴다. 그래서 재개는 **정확해야** 한다.
+세션은 끊긴다 — Kaggle은 12시간마다, 무료 Colab은 예고 없이. 170시간짜리
+200M 런은 수십 번 끊긴다. 그래서 재개는 **정확해야** 한다.
 
 ```python
 from cati import ResumableRun, ResumableStream, HFSource, default_store
@@ -117,10 +118,9 @@ python3 scripts/budget.py v5e1     # t4x2 / p100 / tpuv3 도 가능
 
 1. **토크나이저는 W1에 확정하고 전 티어가 공유한다.**
    중간에 바꾸면 사다리 실험 결과가 전부 비교 불가능해진다.
-2. **가속기가 bf16을 지원해야 지금 코드가 돈다.** Kaggle의 T4/P100은 지원하지 않는다.
-   fp16 경로를 새로 쓰는 대신 Colab v5e-1을 쓴다.
+2. **Kaggle과 Colab을 동시에 돌리지 않는다.** 같은 HF 저장소를 쓰므로 서로 덮어쓴다.
 3. **체크포인트/재개 인프라를 학습 코드보다 먼저 만든다.**
-   무료 Colab은 예고 없이 끊기고 백그라운드 실행도 안 된다.
+   세션은 반드시 끊긴다.
 
 ## 학습 돌리기
 
@@ -154,14 +154,15 @@ python scripts/train.py --tier configs/tier2_200m.json --bench 20   # 설정 실
 ## 현재 상태
 
 - [x] 계획 확정 (PLAN.md)
-- [x] 티어 설정 + 쿼터 검증 (85h / 160h, 버퍼 47%)
+- [x] 티어 설정 + 쿼터 검증 (Kaggle 197h / 240h)
 - [x] 토크나이저 설정 확정 + 파이프라인 검증
 - [x] 체크포인트/재개 인프라 — `test_resume.py` 35/35
 - [x] 모델 (JAX/Flax) — `test_model.py` 24/24, 파라미터 수 계산과 정확히 일치
 - [x] 토큰 패킹 + 학습 루프 — CPU 스모크에서 재개까지 확인
-- [x] Colab 노트북 (학습) + Kaggle 노트북 (토크나이저)
-- [ ] **Colab에서 50M** ← 여기서부터 사람 손이 필요
+- [x] 노트북 3종 (Kaggle 학습 / Colab 학습 / 토크나이저)
+- [x] 토크나이저 확정 — 한국어 2.18 글자/토큰 (SmolLM2 0.47, Qwen3 1.39)
+- [x] fp16 + 동적 손실 스케일링 (T4에 bf16이 없다)
+- [ ] **Kaggle에서 50M** ← 여기서부터 사람 손이 필요
 - [ ] 100M → 200M
-- [ ] `HFSource` 네이티브 재개 실증 (첫 세션이 자동 확인)
-- [ ] MFU 실측 (35% 가정 검증 — 25% 미만이면 토큰 수 하향)
+- [ ] T4 MFU 실측 (v5e-1에서는 12.6%였다)
 - [ ] 제품 트랙: Tauri 셸 + llama.cpp
